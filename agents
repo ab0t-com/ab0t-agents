@@ -1,0 +1,836 @@
+#!/bin/bash
+#
+# agents - Claude Code session browser and launcher
+# Lists projects and sessions, provides quick resume shortcuts
+#
+
+set -euo pipefail
+
+# Platform detection for portability
+IS_MACOS=false
+if [[ "$(uname)" == "Darwin" ]]; then
+    IS_MACOS=true
+fi
+
+# Portable stat: outputs "mtime filepath" for each file
+# Usage: portable_stat file1 file2 ...
+portable_stat() {
+    if $IS_MACOS; then
+        stat -f '%m %N' "$@" 2>/dev/null
+    else
+        stat --format='%Y %n' "$@" 2>/dev/null
+    fi
+}
+
+# Portable find with mtime: outputs "mtime filepath" sorted by time
+# Handles macOS vs GNU stat differences
+# Usage: find_with_mtime dir [find-args...]
+find_with_mtime() {
+    local dir="$1"
+    shift
+    if $IS_MACOS; then
+        find "$dir" "$@" -exec stat -f '%m %N' {} \; 2>/dev/null
+    else
+        find "$dir" "$@" -exec stat --format='%Y %n' {} \; 2>/dev/null
+    fi
+}
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+CLAUDE_DIR="$HOME/.claude"
+PROJECTS_DIR="$CLAUDE_DIR/projects"
+CLAUDE_JSON="$HOME/.claude.json"
+
+# MAINTAINER: Remember to update agents.1.txt man page and bump this version
+# on any changes to the CLI interface, commands, or options.
+AGENTS_VERSION="1.0.0"
+
+# Man page location (same directory as script, or /usr/local/share/man)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAN_PAGE="$SCRIPT_DIR/agents.1.txt"
+
+# Default ignored directories for tree view
+IGNORE_DIRS=".venv|venv|__pycache__|node_modules|.git|.idea|.vscode|.next|.nuxt|dist|build|target|.cache|.pytest_cache|.mypy_cache|.tox|.eggs|*.egg-info|.sass-cache|bower_components|vendor|.bundle|coverage|.nyc_output|.parcel-cache|.turbo|.svelte-kit"
+
+# Tree drawing characters
+T_BRANCH="├── "
+T_LAST="└── "
+T_PIPE="│   "
+T_SPACE="    "
+
+# Helper to convert project dir name to real path
+decode_project_path() {
+    local encoded="$1"
+    # Remove leading dash and convert remaining dashes to slashes
+    echo "$encoded" | sed 's/^-/\//' | sed 's/-/\//g'
+}
+
+# Get human readable time ago
+time_ago() {
+    local seconds=$1
+    if [ $seconds -lt 60 ]; then
+        echo "${seconds}s ago"
+    elif [ $seconds -lt 3600 ]; then
+        echo "$((seconds / 60))m ago"
+    elif [ $seconds -lt 86400 ]; then
+        echo "$((seconds / 3600))h ago"
+    elif [ $seconds -lt 604800 ]; then
+        echo "$((seconds / 86400))d ago"
+    else
+        echo "$((seconds / 604800))w ago"
+    fi
+}
+
+# Get session info from jsonl file (safe: passes file via stdin, not interpolation)
+get_session_info() {
+    local file="$1"
+    local first_msg
+    first_msg=$(head -5 "$file" 2>/dev/null | grep '"type":"user"' | head -1) || true
+
+    if [ -n "$first_msg" ]; then
+        # Extract first user message content (truncated)
+        # Note: Data passed via stdin to avoid shell injection
+        local content
+        content=$(echo "$first_msg" | python3 -c '
+import sys, json
+try:
+    data = json.loads(sys.stdin.read())
+    msg = data.get("message", {}).get("content", "")
+    if isinstance(msg, str):
+        print(msg[:60].replace("\n", " "))
+    elif isinstance(msg, list):
+        for item in msg:
+            if isinstance(item, dict) and item.get("type") == "text":
+                print(item.get("text", "")[:60].replace("\n", " "))
+                break
+except: pass
+' 2>/dev/null) || true
+        echo "$content"
+    fi
+}
+
+# Get detailed session summary (multiple lines from conversation)
+# Safe: file path passed via environment variable, not string interpolation
+get_session_summary() {
+    local file="$1"
+    local max_lines="${2:-3}"
+
+    SESSION_FILE="$file" MAX_LINES="$max_lines" python3 -c '
+import os, json
+
+def extract_text(content):
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                return item.get("text", "")
+    return ""
+
+try:
+    file_path = os.environ.get("SESSION_FILE", "")
+    max_lines = int(os.environ.get("MAX_LINES", "3"))
+    messages = []
+    with open(file_path, "r") as f:
+        for line in f:
+            try:
+                data = json.loads(line)
+                if data.get("type") == "user":
+                    text = extract_text(data.get("message", {}).get("content", ""))
+                    if text:
+                        text = " ".join(text.split())[:80]
+                        messages.append(("user", text))
+                elif data.get("type") == "assistant":
+                    msg = data.get("message", {})
+                    if isinstance(msg, dict):
+                        content = msg.get("content", [])
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text = " ".join(item.get("text", "").split())[:80]
+                                    if text and not text.startswith("<"):
+                                        messages.append(("assistant", text))
+                                        break
+            except: pass
+
+    count = 0
+    for role, text in messages[:max_lines * 2]:
+        if count >= max_lines:
+            break
+        if role == "user":
+            print(f"USR: {text[:70]}")
+            count += 1
+        elif count > 0:
+            print(f"AI:  {text[:70]}")
+except:
+    pass
+' 2>/dev/null
+}
+
+# Get git branch from session
+get_session_branch() {
+    local file="$1"
+    head -10 "$file" 2>/dev/null | grep -o '"gitBranch":"[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+# Tree command - shows project structure with sessions
+cmd_tree() {
+    local target="${1:-.}"
+    local depth="${2:-4}"
+    local show_files=true
+    local show_hidden=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -d|--depth) depth="$2"; shift 2 ;;
+            -a|--all) show_hidden=true; shift ;;
+            --no-files) show_files=false; shift ;;
+            *)
+                if [[ ! "$1" =~ ^- ]]; then
+                    target="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    local real_path=""
+    local project_dir=""
+
+    # Resolve target
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        # Number from agents list
+        if [ -f "$CLAUDE_DIR/.agents_cache" ]; then
+            project_dir=$(sed -n "${target}p" "$CLAUDE_DIR/.agents_cache")
+            if [ -n "$project_dir" ]; then
+                local project_name=$(basename "$project_dir")
+                real_path=$(decode_project_path "$project_name")
+            fi
+        fi
+    elif [ "$target" = "." ]; then
+        real_path=$(pwd)
+        local encoded=$(echo "$real_path" | sed 's/^\///' | sed 's/\//-/g')
+        project_dir="$PROJECTS_DIR/-$encoded"
+    else
+        real_path="$target"
+        local encoded=$(echo "$target" | sed 's/^\///' | sed 's/\//-/g')
+        project_dir="$PROJECTS_DIR/-$encoded"
+    fi
+
+    if [ -z "$real_path" ]; then
+        echo -e "${RED}Could not resolve target: $target${RESET}"
+        exit 1
+    fi
+
+    # Header
+    echo -e "${BOLD}${CYAN}$real_path${RESET}"
+
+    # Check if we have sessions
+    local has_sessions=false
+    if [ -d "$project_dir" ]; then
+        local session_count=$(find "$project_dir" -maxdepth 1 -name "*.jsonl" ! -name "agent-*" 2>/dev/null | wc -l)
+        if [ "$session_count" -gt 0 ]; then
+            has_sessions=true
+        fi
+    fi
+
+    # Show sessions section
+    if [ "$has_sessions" = true ]; then
+        echo -e "${T_BRANCH}${BOLD}${MAGENTA}.claude-sessions/${RESET} ${DIM}($session_count sessions)${RESET}"
+
+        local session_idx=0
+        local session_files=()
+
+        # Collect session files
+        while IFS= read -r line; do
+            session_files+=("$line")
+        done < <(find_with_mtime "$project_dir" -maxdepth 1 -name "*.jsonl" ! -name "agent-*" | sort -rn | head -8)
+
+        local total_sessions=${#session_files[@]}
+
+        for line in "${session_files[@]}"; do
+            session_idx=$((session_idx + 1))
+            local mtime=$(echo "$line" | cut -d' ' -f1)
+            local file=$(echo "$line" | cut -d' ' -f2-)
+            local filename=$(basename "$file")
+            local session_id="${filename%.jsonl}"
+
+            local now=$(date +%s)
+            local age=$((now - mtime))
+            local time_str=$(time_ago $age)
+            local size=$(du -h "$file" 2>/dev/null | cut -f1)
+            local branch=$(get_session_branch "$file")
+
+            # Color based on recency
+            local time_color=$GRAY
+            [ $age -lt 3600 ] && time_color=$GREEN
+            [ $age -lt 86400 ] && [ $age -ge 3600 ] && time_color=$YELLOW
+
+            # Tree connector
+            local connector="$T_PIPE$T_BRANCH"
+            local sub_prefix="$T_PIPE$T_PIPE"
+            if [ $session_idx -eq $total_sessions ]; then
+                connector="$T_PIPE$T_LAST"
+                sub_prefix="$T_PIPE$T_SPACE"
+            fi
+
+            # Session header
+            printf "${connector}${YELLOW}[%d]${RESET} ${WHITE}${session_id:0:8}${RESET}" "$session_idx"
+            printf " ${time_color}%-8s${RESET}" "$time_str"
+            printf " ${DIM}%s${RESET}" "$size"
+            if [ -n "$branch" ]; then
+                printf " ${CYAN}⎇ %s${RESET}" "$branch"
+            fi
+            echo
+
+            # Session summary (first user message)
+            local summary=$(get_session_info "$file")
+            if [ -n "$summary" ]; then
+                # Truncate to fit
+                [ ${#summary} -gt 65 ] && summary="${summary:0:62}..."
+                printf "${sub_prefix}${GRAY}\"${summary}\"${RESET}\n"
+            fi
+        done
+
+        # Show if more sessions exist
+        if [ "$session_count" -gt 8 ]; then
+            echo -e "${T_PIPE}${T_SPACE}${DIM}... and $((session_count - 8)) more sessions${RESET}"
+        fi
+    fi
+
+    # Show project files if directory exists
+    if [ -d "$real_path" ] && [ "$show_files" = true ]; then
+        local tree_prefix="$T_LAST"
+        [ "$has_sessions" = true ] && tree_prefix="$T_BRANCH"
+
+        echo -e "${tree_prefix}${BOLD}${BLUE}files/${RESET}"
+
+        # Build ignore pattern for find
+        local ignore_pattern=""
+        IFS='|' read -ra IGNORE_ARRAY <<< "$IGNORE_DIRS"
+        for dir in "${IGNORE_ARRAY[@]}"; do
+            ignore_pattern="$ignore_pattern -name '$dir' -prune -o"
+        done
+
+        # Use tree if available, otherwise custom implementation
+        if command -v tree &> /dev/null; then
+            # Build tree ignore pattern
+            local tree_ignore=$(echo "$IGNORE_DIRS" | sed 's/|/ -I /g')
+            tree -C -L "$depth" -I "$tree_ignore" --noreport "$real_path" 2>/dev/null | tail -n +2 | head -40 | sed "s/^/    /"
+        else
+            # Fallback: custom tree-like output
+            _draw_tree "$real_path" "" "$depth" 1
+        fi
+
+        # Count hidden items
+        if [ "$show_hidden" = false ]; then
+            local hidden_count=0
+            for dir in "${IGNORE_ARRAY[@]}"; do
+                if [ -d "$real_path/$dir" ]; then
+                    hidden_count=$((hidden_count + 1))
+                fi
+            done
+            if [ $hidden_count -gt 0 ]; then
+                echo -e "    ${DIM}($hidden_count directories hidden: .venv, node_modules, etc.)${RESET}"
+            fi
+        fi
+    fi
+
+    echo
+
+    # Resume hints
+    if [ "$has_sessions" = true ]; then
+        echo -e "${DIM}Quick resume: ${GREEN}cd $real_path && claude -c${RESET}"
+    fi
+}
+
+# Helper function to draw tree (fallback if tree command not available)
+_draw_tree() {
+    local dir="$1"
+    local prefix="$2"
+    local max_depth="$3"
+    local current_depth="$4"
+
+    [ "$current_depth" -gt "$max_depth" ] && return
+
+    local items=()
+    local count=0
+
+    # Collect visible items
+    while IFS= read -r -d '' item; do
+        local name=$(basename "$item")
+
+        # Skip ignored directories
+        local skip=false
+        IFS='|' read -ra IGNORE_ARRAY <<< "$IGNORE_DIRS"
+        for pattern in "${IGNORE_ARRAY[@]}"; do
+            if [[ "$name" == $pattern ]]; then
+                skip=true
+                break
+            fi
+        done
+
+        [ "$skip" = true ] && continue
+        [ "${name:0:1}" = "." ] && continue  # Skip hidden by default
+
+        items+=("$item")
+        count=$((count + 1))
+        [ $count -ge 20 ] && break  # Limit items per level
+    done < <(find "$dir" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
+
+    local total=${#items[@]}
+    local idx=0
+
+    for item in "${items[@]}"; do
+        idx=$((idx + 1))
+        local name=$(basename "$item")
+        local connector="$T_BRANCH"
+        local next_prefix="${prefix}$T_PIPE"
+
+        if [ $idx -eq $total ]; then
+            connector="$T_LAST"
+            next_prefix="${prefix}$T_SPACE"
+        fi
+
+        if [ -d "$item" ]; then
+            echo -e "    ${prefix}${connector}${BLUE}${name}/${RESET}"
+            _draw_tree "$item" "$next_prefix" "$max_depth" $((current_depth + 1))
+        else
+            # Color files by extension
+            local color="$RESET"
+            case "${name##*.}" in
+                py) color="$GREEN" ;;
+                js|ts|jsx|tsx) color="$YELLOW" ;;
+                json|yaml|yml|toml) color="$CYAN" ;;
+                md|txt|rst) color="$WHITE" ;;
+                sh|bash) color="$MAGENTA" ;;
+                *) color="$RESET" ;;
+            esac
+            echo -e "    ${prefix}${connector}${color}${name}${RESET}"
+        fi
+    done
+}
+
+# List all projects with their sessions
+cmd_list() {
+    local show_all=false
+    local limit=10
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -a|--all) show_all=true; shift ;;
+            -n) limit="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ ! -d "$PROJECTS_DIR" ]; then
+        echo -e "${RED}No Claude projects found at $PROJECTS_DIR${RESET}"
+        exit 1
+    fi
+
+    echo -e "${BOLD}${CYAN}Claude Code Projects${RESET}"
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo
+
+    local idx=1
+    local project_list=()
+
+    # Get projects sorted by most recent session
+    while IFS= read -r line; do
+        local mtime=$(echo "$line" | cut -d' ' -f1)
+        local project_dir=$(echo "$line" | cut -d' ' -f2-)
+        local project_name=$(basename "$project_dir")
+        local real_path=$(decode_project_path "$project_name")
+
+        # Skip if not enough sessions
+        local session_count=$(find "$project_dir" -maxdepth 1 -name "*.jsonl" ! -name "agent-*" 2>/dev/null | wc -l)
+        [ "$session_count" -eq 0 ] && continue
+
+        project_list+=("$project_dir")
+
+        local now=$(date +%s)
+        local age=$((now - mtime))
+        local time_str=$(time_ago $age)
+
+        # Color based on recency
+        local time_color=$GRAY
+        [ $age -lt 3600 ] && time_color=$GREEN
+        [ $age -lt 86400 ] && [ $age -ge 3600 ] && time_color=$YELLOW
+
+        # Get last session ID from claude.json if available
+        # Safe: passes paths via environment variables to avoid injection
+        local last_session=""
+        if [ -f "$CLAUDE_JSON" ]; then
+            last_session=$(CLAUDE_JSON_PATH="$CLAUDE_JSON" PROJECT_NAME="${project_name#-}" REAL_PATH="$real_path" python3 -c '
+import os, json
+try:
+    with open(os.environ["CLAUDE_JSON_PATH"]) as f:
+        data = json.load(f)
+    projects = data.get("projects", {})
+    project_name = os.environ.get("PROJECT_NAME", "")
+    real_path = os.environ.get("REAL_PATH", "")
+    for path, info in projects.items():
+        if path.replace("/", "-").lstrip("-") == project_name or path == real_path:
+            print(info.get("lastSessionId", ""))
+            break
+except: pass
+' 2>/dev/null) || true
+        fi
+
+        printf "${BOLD}${WHITE}[%2d]${RESET} ${BLUE}%s${RESET}\n" "$idx" "$real_path"
+        printf "     ${time_color}%-10s${RESET} ${DIM}sessions: %d${RESET}" "$time_str" "$session_count"
+
+        if [ -n "$last_session" ]; then
+            printf " ${MAGENTA}last: ${last_session:0:8}${RESET}"
+        fi
+        echo
+
+        idx=$((idx + 1))
+        [ "$show_all" = false ] && [ $idx -gt $limit ] && break
+    done < <(find_with_mtime "$PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d | sort -rn)
+
+    echo
+    echo -e "${DIM}Usage: agents show <num>  or  agents show <path>${RESET}"
+    echo -e "${DIM}       agents list -a     (show all projects)${RESET}"
+
+    # Save project list for quick access
+    printf '%s\n' "${project_list[@]}" > "$CLAUDE_DIR/.agents_cache"
+}
+
+# Show sessions for a specific project
+cmd_show() {
+    local target="$1"
+    local project_dir=""
+
+    if [ -z "$target" ]; then
+        target="."
+    fi
+
+    # Check if target is a number (index from list)
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        if [ -f "$CLAUDE_DIR/.agents_cache" ]; then
+            project_dir=$(sed -n "${target}p" "$CLAUDE_DIR/.agents_cache")
+        fi
+        if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
+            echo -e "${RED}Invalid project number. Run 'agents list' first.${RESET}"
+            exit 1
+        fi
+    elif [ "$target" = "." ]; then
+        # Current directory
+        local cwd=$(pwd)
+        local encoded=$(echo "$cwd" | sed 's/^\///' | sed 's/\//-/g')
+        project_dir="$PROJECTS_DIR/-$encoded"
+    else
+        # Treat as path
+        local encoded=$(echo "$target" | sed 's/^\///' | sed 's/\//-/g')
+        project_dir="$PROJECTS_DIR/-$encoded"
+    fi
+
+    if [ ! -d "$project_dir" ]; then
+        echo -e "${RED}No sessions found for: $target${RESET}"
+        echo -e "${DIM}Project dir: $project_dir${RESET}"
+        exit 1
+    fi
+
+    local project_name=$(basename "$project_dir")
+    local real_path=$(decode_project_path "$project_name")
+
+    echo -e "${BOLD}${CYAN}Sessions in ${BLUE}$real_path${RESET}"
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo
+
+    local idx=1
+    local session_list=()
+
+    # List sessions sorted by modification time
+    while IFS= read -r line; do
+        local mtime=$(echo "$line" | cut -d' ' -f1)
+        local file=$(echo "$line" | cut -d' ' -f2-)
+        local filename=$(basename "$file")
+
+        # Skip agent files
+        [[ "$filename" == agent-* ]] && continue
+
+        local session_id="${filename%.jsonl}"
+        session_list+=("$session_id")
+
+        local now=$(date +%s)
+        local age=$((now - mtime))
+        local time_str=$(time_ago $age)
+        local date_str=$(date -d "@$mtime" '+%Y-%m-%d %H:%M')
+
+        # Color based on recency
+        local time_color=$GRAY
+        [ $age -lt 3600 ] && time_color=$GREEN
+        [ $age -lt 86400 ] && [ $age -ge 3600 ] && time_color=$YELLOW
+
+        # Get file size
+        local size=$(du -h "$file" 2>/dev/null | cut -f1)
+
+        # Get first message preview
+        local preview=$(get_session_info "$file")
+        [ ${#preview} -gt 50 ] && preview="${preview:0:50}..."
+
+        printf "${BOLD}${WHITE}[%2d]${RESET} ${MAGENTA}%s${RESET}\n" "$idx" "${session_id:0:8}"
+        printf "     ${time_color}%-10s${RESET} ${DIM}%s${RESET}  ${DIM}(%s)${RESET}\n" "$time_str" "$date_str" "$size"
+
+        if [ -n "$preview" ]; then
+            printf "     ${GRAY}\"%.55s\"${RESET}\n" "$preview"
+        fi
+        echo
+
+        idx=$((idx + 1))
+        [ $idx -gt 15 ] && break
+    done < <(find_with_mtime "$project_dir" -maxdepth 1 -name "*.jsonl" ! -name "agent-*" | sort -rn)
+
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo -e "${BOLD}Resume commands:${RESET}"
+    echo
+    echo -e "  ${GREEN}cd $real_path && claude -c${RESET}  ${DIM}# continue last session${RESET}"
+
+    if [ ${#session_list[@]} -gt 0 ]; then
+        echo -e "  ${GREEN}cd $real_path && claude -r \"${session_list[0]:0:8}\"${RESET}  ${DIM}# resume specific${RESET}"
+    fi
+    echo
+
+    # Save session list for quick access
+    printf '%s\n' "${session_list[@]}" > "$CLAUDE_DIR/.agents_sessions_cache"
+    echo "$real_path" > "$CLAUDE_DIR/.agents_path_cache"
+}
+
+# Quick resume command
+cmd_resume() {
+    local target="$1"
+    local query="$2"
+
+    if [ -z "$target" ]; then
+        echo -e "${RED}Usage: agents resume <session-num> [query]${RESET}"
+        exit 1
+    fi
+
+    local session_id=""
+    local project_path=""
+
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        if [ -f "$CLAUDE_DIR/.agents_sessions_cache" ] && [ -f "$CLAUDE_DIR/.agents_path_cache" ]; then
+            session_id=$(sed -n "${target}p" "$CLAUDE_DIR/.agents_sessions_cache")
+            project_path=$(cat "$CLAUDE_DIR/.agents_path_cache")
+        fi
+    else
+        session_id="$target"
+        project_path=$(pwd)
+    fi
+
+    if [ -z "$session_id" ] || [ -z "$project_path" ]; then
+        echo -e "${RED}Could not find session. Run 'agents show' first.${RESET}"
+        exit 1
+    fi
+
+    echo -e "${CYAN}Resuming session ${MAGENTA}${session_id:0:8}${RESET} in ${BLUE}$project_path${RESET}"
+    echo
+
+    if [ -n "$query" ]; then
+        echo -e "${DIM}cd \"$project_path\" && claude -r \"${session_id:0:8}\" \"$query\"${RESET}"
+        cd "$project_path" && claude -r "${session_id:0:8}" "$query"
+    else
+        echo -e "${DIM}cd \"$project_path\" && claude -r \"${session_id:0:8}\"${RESET}"
+        cd "$project_path" && claude -r "${session_id:0:8}"
+    fi
+}
+
+# Quick stats
+cmd_stats() {
+    echo -e "${BOLD}${CYAN}Claude Code Statistics${RESET}"
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo
+
+    local total_projects=$(find "$PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    local total_sessions=$(find "$PROJECTS_DIR" -name "*.jsonl" ! -name "agent-*" 2>/dev/null | wc -l)
+    local total_agents=$(find "$PROJECTS_DIR" -name "agent-*.jsonl" 2>/dev/null | wc -l)
+    local total_size=$(du -sh "$PROJECTS_DIR" 2>/dev/null | cut -f1)
+
+    echo -e "  ${WHITE}Projects:${RESET}  $total_projects"
+    echo -e "  ${WHITE}Sessions:${RESET}  $total_sessions"
+    echo -e "  ${WHITE}Agents:${RESET}    $total_agents"
+    echo -e "  ${WHITE}Size:${RESET}      $total_size"
+    echo
+
+    if [ -f "$CLAUDE_JSON" ]; then
+        local startups
+        startups=$(CLAUDE_JSON_PATH="$CLAUDE_JSON" python3 -c '
+import os, json
+try:
+    with open(os.environ["CLAUDE_JSON_PATH"]) as f:
+        data = json.load(f)
+    print(data.get("numStartups", 0))
+except: print("0")
+' 2>/dev/null) || true
+        echo -e "  ${WHITE}Total startups:${RESET} $startups"
+    fi
+}
+
+# Man page viewer
+cmd_man() {
+    if [ -f "$MAN_PAGE" ]; then
+        # Use less if available for scrolling, otherwise cat
+        if command -v less &> /dev/null; then
+            less -R "$MAN_PAGE"
+        else
+            cat "$MAN_PAGE"
+        fi
+    else
+        echo -e "${RED}Man page not found at: $MAN_PAGE${RESET}"
+        echo -e "${DIM}Expected location: same directory as agents script${RESET}"
+        echo
+        echo -e "Try running: ${CYAN}agents help${RESET} for brief usage information."
+        exit 1
+    fi
+}
+
+# Help
+cmd_help() {
+    echo -e "${BOLD}agents${RESET} - Claude Code session browser (v${AGENTS_VERSION})"
+    echo
+    echo -e "${BOLD}USAGE:${RESET}"
+    echo -e "  agents                       List all projects (alias: agents list)"
+    echo -e "  agents list [-a] [-n N]      List projects (-a=all, -n=limit)"
+    echo -e "  agents show [path|num]       Show sessions for project"
+    echo -e "  agents show .                Show sessions for current directory"
+    echo -e "  agents tree [path] [-d N]    Tree view with sessions (default depth: 4)"
+    echo -e "  agents resume <num>          Resume a session from show list"
+    echo -e "  agents stats                 Show usage statistics"
+    echo -e "  agents man                   Show detailed manual page"
+    echo
+    echo -e "${BOLD}TREE OPTIONS:${RESET}"
+    echo -e "  -d, --depth N    Set tree depth (default: 4)"
+    echo -e "  -a, --all        Show hidden directories too"
+    echo -e "  --no-files       Only show sessions, not project files"
+    echo
+    echo -e "${BOLD}EXAMPLES:${RESET}"
+    echo -e "  ${DIM}# List recent projects${RESET}"
+    echo -e "  agents list"
+    echo
+    echo -e "  ${DIM}# Tree view of current directory${RESET}"
+    echo -e "  agents tree ."
+    echo
+    echo -e "  ${DIM}# Tree view of project #3 with depth 2${RESET}"
+    echo -e "  agents tree 3 -d 2"
+    echo
+    echo -e "  ${DIM}# Show sessions for project #3${RESET}"
+    echo -e "  agents show 3"
+    echo
+    echo -e "  ${DIM}# Resume session #1 from last show${RESET}"
+    echo -e "  agents resume 1"
+    echo
+    echo -e "${BOLD}HIDDEN DIRECTORIES:${RESET}"
+    echo -e "  ${DIM}Auto-hidden: .venv, node_modules, __pycache__, .git, dist, build, etc.${RESET}"
+    echo
+    echo -e "${BOLD}DATA LOCATIONS:${RESET}"
+    echo -e "  ${DIM}Sessions:${RESET}  ~/.claude/projects/<project>/*.jsonl"
+    echo -e "  ${DIM}Metadata:${RESET}  ~/.claude.json"
+    echo -e "  ${DIM}History:${RESET}   ~/.claude/file-history/"
+}
+
+# Show contextual suggestions based on command
+# Usage: show_suggestions <command> [context]
+show_suggestions() {
+    local cmd="$1"
+    local context="${2:-}"
+
+    echo
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo -e "${BOLD}${CYAN}You might also want to:${RESET}"
+
+    case "$cmd" in
+        list)
+            echo -e "  ${GREEN}agents show <num>${RESET}     ${DIM}View sessions for a project${RESET}"
+            echo -e "  ${GREEN}agents tree <num>${RESET}     ${DIM}Tree view with files + sessions${RESET}"
+            echo -e "  ${GREEN}agents stats${RESET}          ${DIM}See usage statistics${RESET}"
+            ;;
+        show)
+            echo -e "  ${GREEN}agents resume <num>${RESET}   ${DIM}Resume a session from this list${RESET}"
+            echo -e "  ${GREEN}agents tree ${context:-.}${RESET}      ${DIM}See project structure + sessions${RESET}"
+            echo -e "  ${GREEN}agents list${RESET}           ${DIM}Browse other projects${RESET}"
+            ;;
+        tree)
+            echo -e "  ${GREEN}agents show ${context:-.}${RESET}      ${DIM}Detailed session list${RESET}"
+            echo -e "  ${GREEN}agents resume 1${RESET}       ${DIM}Resume most recent session${RESET}"
+            echo -e "  ${GREEN}agents tree -d 6${RESET}      ${DIM}Deeper tree view${RESET}"
+            ;;
+        stats)
+            echo -e "  ${GREEN}agents list -a${RESET}        ${DIM}See all projects${RESET}"
+            echo -e "  ${GREEN}agents tree .${RESET}         ${DIM}Explore current directory${RESET}"
+            ;;
+        resume)
+            echo -e "  ${GREEN}agents show${RESET}           ${DIM}Pick a different session${RESET}"
+            echo -e "  ${GREEN}agents list${RESET}           ${DIM}Switch to another project${RESET}"
+            ;;
+        *)
+            echo -e "  ${GREEN}agents help${RESET}           ${DIM}See all commands${RESET}"
+            echo -e "  ${GREEN}agents man${RESET}            ${DIM}Full documentation${RESET}"
+            ;;
+    esac
+    echo
+}
+
+# Main
+case "${1:-list}" in
+    list|ls)
+        shift 2>/dev/null || true
+        cmd_list "$@"
+        show_suggestions "list"
+        ;;
+    show|s)
+        shift
+        target="${1:-.}"
+        cmd_show "$@"
+        show_suggestions "show" "$target"
+        ;;
+    tree|t)
+        shift
+        target="${1:-.}"
+        cmd_tree "$@"
+        show_suggestions "tree" "$target"
+        ;;
+    resume|r)
+        shift
+        cmd_resume "$@"
+        # Don't show suggestions after resume (launches claude)
+        ;;
+    stats)
+        cmd_stats
+        show_suggestions "stats"
+        ;;
+    man)
+        cmd_man
+        ;;
+    help|--help|-h)
+        cmd_help
+        ;;
+    version|--version|-v)
+        echo "agents version $AGENTS_VERSION"
+        ;;
+    *)
+        # If arg looks like a path or number, treat as show
+        if [[ "$1" =~ ^[0-9]+$ ]] || [[ "$1" == "." ]] || [[ "$1" == /* ]]; then
+            cmd_show "$1"
+            show_suggestions "show" "$1"
+        else
+            cmd_list "$@"
+            show_suggestions "list"
+        fi
+        ;;
+esac
