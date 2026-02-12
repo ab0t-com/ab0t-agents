@@ -889,7 +889,7 @@ _draw_tree() {
     done
 }
 
-# List all projects with their sessions (delegates to Python with adapters)
+# List all projects with their sessions
 cmd_list() {
     local show_all=false
     local limit=10
@@ -902,54 +902,180 @@ cmd_list() {
         esac
     done
 
-    SHOW_ALL="$show_all" LIMIT="$limit" \
-    python3 "$SCRIPT_DIR/scripts/session-list.py"
-}
-
-# Show sessions for a specific project (delegates to Python with adapters)
-# Accepts: number (position from last list), letter (stable ID), or path
-cmd_show() {
-    local target="${1:-.}"
-
-    # If target is a number or letter, resolve from projects cache
-    if [[ "$target" =~ ^[0-9]+$ ]] || [[ "$target" =~ ^[a-z]{1,2}$ ]]; then
-        if [ -f "$AGENTS_CACHE_DIR/projects_cache.json" ]; then
-            local resolved
-            resolved=$(TARGET_KEY="$target" python3 -c '
-import os, json
-try:
-    with open(os.path.expanduser("~/.ab0t/.agents/projects_cache.json")) as f:
-        projects = json.load(f)
-    key = os.environ["TARGET_KEY"]
-    # Try as number first
-    if key.isdigit():
-        idx = int(key) - 1
-        if 0 <= idx < len(projects):
-            print(projects[idx]["path"])
-    else:
-        # Try as letter ID
-        for p in projects:
-            if p.get("letter") == key:
-                print(p["path"])
-                break
-except: pass
-' 2>/dev/null)
-            if [ -n "$resolved" ]; then
-                target="$resolved"
-            else
-                echo -e "${RED}Invalid project number/letter. Run 'agents list' first.${RESET}"
-                exit 1
-            fi
-        else
-            echo -e "${RED}Run 'agents list' first.${RESET}"
-            exit 1
-        fi
+    if [ ! -d "$PROJECTS_DIR" ]; then
+        echo -e "${RED}No Claude projects found at $PROJECTS_DIR${RESET}"
+        exit 1
     fi
 
-    TARGET="$target" python3 "$SCRIPT_DIR/scripts/session-show.py"
+    echo -e "${BOLD}${CYAN}Claude Code Projects${RESET}"
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo
+
+    local idx=1
+    local project_list=()
+
+    # Get projects sorted by most recent session
+    while IFS= read -r line; do
+        local mtime=$(echo "$line" | cut -d' ' -f1)
+        local project_dir=$(echo "$line" | cut -d' ' -f2-)
+        local project_name=$(basename "$project_dir")
+        local real_path=$(decode_project_path "$project_name")
+
+        # Skip if not enough sessions
+        local session_count=$(find "$project_dir" -maxdepth 1 -name "*.jsonl" ! -name "agent-*" 2>/dev/null | wc -l)
+        [ "$session_count" -eq 0 ] && continue
+
+        project_list+=("$project_dir")
+
+        local now=$(date +%s)
+        local age=$((now - mtime))
+        local time_str=$(time_ago $age)
+
+        # Color based on recency
+        local time_color=$GRAY
+        [ $age -lt 3600 ] && time_color=$GREEN
+        [ $age -lt 86400 ] && [ $age -ge 3600 ] && time_color=$YELLOW
+
+        # Get last session ID from claude.json if available
+        # Safe: passes paths via environment variables to avoid injection
+        local last_session=""
+        if [ -f "$CLAUDE_JSON" ]; then
+            last_session=$(CLAUDE_JSON_PATH="$CLAUDE_JSON" PROJECT_NAME="${project_name#-}" REAL_PATH="$real_path" python3 -c '
+import os, json
+try:
+    with open(os.environ["CLAUDE_JSON_PATH"]) as f:
+        data = json.load(f)
+    projects = data.get("projects", {})
+    project_name = os.environ.get("PROJECT_NAME", "")
+    real_path = os.environ.get("REAL_PATH", "")
+    for path, info in projects.items():
+        if path.replace("/", "-").lstrip("-") == project_name or path == real_path:
+            print(info.get("lastSessionId", ""))
+            break
+except: pass
+' 2>/dev/null) || true
+        fi
+
+        printf "${BOLD}${WHITE}[%2d]${RESET} ${YELLOW}%s${RESET}\n" "$idx" "$real_path"
+        printf "     ${time_color}%-10s${RESET} ${DIM}sessions: %d${RESET}" "$time_str" "$session_count"
+
+        if [ -n "$last_session" ]; then
+            printf " ${MAGENTA}last: ${last_session:0:8}${RESET}"
+        fi
+        echo
+
+        idx=$((idx + 1))
+        [ "$show_all" = false ] && [ $idx -gt $limit ] && break
+    done < <(find_with_mtime "$PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d | sort -rn)
+
+    echo
+    echo -e "${DIM}Usage: agents show <num>  or  agents show <path>${RESET}"
+    echo -e "${DIM}       agents list -a     (show all projects)${RESET}"
+
+    # Save project list for quick access
+    mkdir -p "$AGENTS_CACHE_DIR"
+    printf '%s\n' "${project_list[@]}" > "$AGENTS_CACHE_DIR/projects_cache"
 }
 
-# Quick resume command - reads from sessions_cache.json (supports multiple agents)
+# Show sessions for a specific project
+cmd_show() {
+    local target="${1:-.}"
+    local project_dir=""
+
+    # Check if target is a number (index from list)
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        if [ -f "$AGENTS_CACHE_DIR/projects_cache" ]; then
+            project_dir=$(sed -n "${target}p" "$AGENTS_CACHE_DIR/projects_cache")
+        fi
+        if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
+            echo -e "${RED}Invalid project number. Run 'agents list' first.${RESET}"
+            exit 1
+        fi
+    elif [ "$target" = "." ]; then
+        # Current directory
+        local cwd=$(pwd)
+        local encoded=$(encode_project_path "$cwd")
+        project_dir="$PROJECTS_DIR/-$encoded"
+    else
+        # Treat as path
+        local encoded=$(encode_project_path "$target")
+        project_dir="$PROJECTS_DIR/-$encoded"
+    fi
+
+    if [ ! -d "$project_dir" ]; then
+        echo -e "${RED}No sessions found for: $target${RESET}"
+        echo -e "${DIM}Project dir: $project_dir${RESET}"
+        exit 1
+    fi
+
+    local project_name=$(basename "$project_dir")
+    local real_path=$(decode_project_path "$project_name")
+
+    echo -e "${BOLD}${CYAN}Sessions in ${YELLOW}$real_path${RESET}"
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo
+
+    local idx=1
+    local session_list=()
+
+    # List sessions sorted by modification time
+    while IFS= read -r line; do
+        local mtime=$(echo "$line" | cut -d' ' -f1)
+        local file=$(echo "$line" | cut -d' ' -f2-)
+        local filename=$(basename "$file")
+
+        # Skip agent files
+        [[ "$filename" == agent-* ]] && continue
+
+        local session_id="${filename%.jsonl}"
+        session_list+=("$session_id")
+
+        local now=$(date +%s)
+        local age=$((now - mtime))
+        local time_str=$(time_ago $age)
+        local date_str=$(date -d "@$mtime" '+%Y-%m-%d %H:%M')
+
+        # Color based on recency
+        local time_color=$GRAY
+        [ $age -lt 3600 ] && time_color=$GREEN
+        [ $age -lt 86400 ] && [ $age -ge 3600 ] && time_color=$YELLOW
+
+        # Get file size
+        local size=$(du -h "$file" 2>/dev/null | cut -f1)
+
+        # Get first message preview
+        local preview=$(get_session_info "$file")
+        [ ${#preview} -gt 50 ] && preview="${preview:0:50}..."
+
+        printf "${BOLD}${WHITE}[%2d]${RESET} ${MAGENTA}%s${RESET}\n" "$idx" "${session_id:0:8}"
+        printf "     ${time_color}%-10s${RESET} ${DIM}%s${RESET}  ${DIM}(%s)${RESET}\n" "$time_str" "$date_str" "$size"
+
+        if [ -n "$preview" ]; then
+            printf "     ${GRAY}\"%.55s\"${RESET}\n" "$preview"
+        fi
+        echo
+
+        idx=$((idx + 1))
+        [ $idx -gt 15 ] && break
+    done < <(find_with_mtime "$project_dir" -maxdepth 1 -name "*.jsonl" ! -name "agent-*" | sort -rn)
+
+    echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+    echo -e "${BOLD}Resume commands:${RESET}"
+    echo
+    echo -e "  ${GREEN}cd $real_path && claude -c${RESET}  ${DIM}# continue last session${RESET}"
+
+    if [ ${#session_list[@]} -gt 0 ]; then
+        echo -e "  ${GREEN}cd $real_path && claude -r \"${session_list[0]:0:8}\"${RESET}  ${DIM}# resume specific${RESET}"
+    fi
+    echo
+
+    # Save session list for quick access
+    mkdir -p "$AGENTS_CACHE_DIR"
+    printf '%s\n' "${session_list[@]}" > "$AGENTS_CACHE_DIR/sessions_cache"
+    echo "$real_path" > "$AGENTS_CACHE_DIR/path_cache"
+}
+
+# Quick resume command
 cmd_resume() {
     local target="${1:-}"
     local query="${2:-}"
@@ -961,30 +1087,9 @@ cmd_resume() {
 
     local session_id=""
     local project_path=""
-    local agent_name="claude"
 
     if [[ "$target" =~ ^[0-9]+$ ]]; then
-        # Look up from JSON cache (new format from session-show.py)
-        if [ -f "$AGENTS_CACHE_DIR/sessions_cache.json" ]; then
-            local resolved
-            resolved=$(TARGET_NUM="$target" python3 -c '
-import os, json
-try:
-    with open(os.path.expanduser("~/.ab0t/.agents/sessions_cache.json")) as f:
-        sessions = json.load(f)
-    idx = int(os.environ["TARGET_NUM"]) - 1
-    if 0 <= idx < len(sessions):
-        s = sessions[idx]
-        print(f"{s[\"session_id\"]}|{s[\"path\"]}|{s[\"agent\"]}")
-except: pass
-' 2>/dev/null)
-            if [ -n "$resolved" ]; then
-                session_id=$(echo "$resolved" | cut -d'|' -f1)
-                project_path=$(echo "$resolved" | cut -d'|' -f2)
-                agent_name=$(echo "$resolved" | cut -d'|' -f3)
-            fi
-        # Fallback: old plain-text cache
-        elif [ -f "$AGENTS_CACHE_DIR/sessions_cache" ] && [ -f "$AGENTS_CACHE_DIR/path_cache" ]; then
+        if [ -f "$AGENTS_CACHE_DIR/sessions_cache" ] && [ -f "$AGENTS_CACHE_DIR/path_cache" ]; then
             session_id=$(sed -n "${target}p" "$AGENTS_CACHE_DIR/sessions_cache")
             project_path=$(cat "$AGENTS_CACHE_DIR/path_cache")
         fi
@@ -998,109 +1103,28 @@ except: pass
         exit 1
     fi
 
-    echo -e "${CYAN}Resuming ${BOLD}${agent_name}${RESET}${CYAN} session ${MAGENTA}${session_id:0:8}${RESET} in ${BLUE}$project_path${RESET}"
+    echo -e "${CYAN}Resuming session ${MAGENTA}${session_id:0:8}${RESET} in ${BLUE}$project_path${RESET}"
     echo
 
-    case "$agent_name" in
-        codex)
-            if [ -n "$query" ]; then
-                echo -e "${DIM}cd \"$project_path\" && codex resume \"$session_id\" \"$query\"${RESET}"
-                cd "$project_path" && codex resume "$session_id" "$query"
-            else
-                echo -e "${DIM}cd \"$project_path\" && codex resume \"$session_id\"${RESET}"
-                cd "$project_path" && codex resume "$session_id"
-            fi
-            ;;
-        *)
-            if [ -n "$query" ]; then
-                echo -e "${DIM}cd \"$project_path\" && claude -r \"$session_id\" \"$query\"${RESET}"
-                cd "$project_path" && claude -r "$session_id" "$query"
-            else
-                echo -e "${DIM}cd \"$project_path\" && claude -r \"$session_id\"${RESET}"
-                cd "$project_path" && claude -r "$session_id"
-            fi
-            ;;
-    esac
+    if [ -n "$query" ]; then
+        echo -e "${DIM}cd \"$project_path\" && claude -r \"$session_id\" \"$query\"${RESET}"
+        cd "$project_path" && claude -r "$session_id" "$query"
+    else
+        echo -e "${DIM}cd \"$project_path\" && claude -r \"$session_id\"${RESET}"
+        cd "$project_path" && claude -r "$session_id"
+    fi
 }
 
-# Quick resume from project list - resolves letter/number from projects_cache.json,
-# cd's into the project dir, and resumes the last session (claude -c / codex resume --last)
-cmd_quick_resume() {
-    local target="${1:-}"
-
-    if [ -z "$target" ]; then
-        echo -e "${RED}Usage: agents go <letter|num>${RESET}"
-        echo -e "${DIM}Resume the last session for a project from the agents list.${RESET}"
-        exit 1
-    fi
-
-    if ! [ -f "$AGENTS_CACHE_DIR/projects_cache.json" ]; then
-        echo -e "${RED}Run 'agents' first to build the project list.${RESET}"
-        exit 1
-    fi
-
-    local resolved
-    resolved=$(TARGET_KEY="$target" python3 -c '
-import os, json
-try:
-    with open(os.path.expanduser("~/.ab0t/.agents/projects_cache.json")) as f:
-        projects = json.load(f)
-    key = os.environ["TARGET_KEY"]
-    match = None
-    if key.isdigit():
-        idx = int(key) - 1
-        if 0 <= idx < len(projects):
-            match = projects[idx]
-    else:
-        for p in projects:
-            if p.get("letter") == key:
-                match = p
-                break
-    if match:
-        # Pick primary agent: prefer claude, fall back to first available
-        agents = match.get("agents", ["claude"])
-        agent = "claude" if "claude" in agents else agents[0]
-        print(f"{match[\"path\"]}|{agent}")
-except: pass
-' 2>/dev/null)
-
-    if [ -z "$resolved" ]; then
-        echo -e "${RED}Invalid project letter/number. Run 'agents' first.${RESET}"
-        exit 1
-    fi
-
-    local project_path agent_name
-    project_path=$(echo "$resolved" | cut -d'|' -f1)
-    agent_name=$(echo "$resolved" | cut -d'|' -f2)
-
-    echo -e "${CYAN}Resuming last ${BOLD}${agent_name}${RESET}${CYAN} session in ${YELLOW}$project_path${RESET}"
-    echo
-
-    case "$agent_name" in
-        codex)
-            echo -e "${DIM}cd \"$project_path\" && codex resume --last${RESET}"
-            cd "$project_path" && sleep 1 && codex resume --last
-            ;;
-        *)
-            echo -e "${DIM}cd \"$project_path\" && claude -c${RESET}"
-            cd "$project_path" && sleep 1 && claude -c
-            ;;
-    esac
-}
 
 # Quick stats - delegates to scripts/session-stats.py
 cmd_stats() {
-    # Compute combined size across all known agent data dirs
-    local total_size_bytes=0
-    for dir in "$PROJECTS_DIR" "$HOME/.codex/sessions"; do
-        if [ -d "$dir" ]; then
-            local sz
-            sz=$(du -sb "$dir" 2>/dev/null | cut -f1)
-            total_size_bytes=$((total_size_bytes + sz))
-        fi
-    done
+    if [ ! -d "$PROJECTS_DIR" ]; then
+        echo -e "${RED}No Claude projects found at $PROJECTS_DIR${RESET}"
+        exit 1
+    fi
+
     local total_size
-    total_size=$(echo "$total_size_bytes" | numfmt --to=iec 2>/dev/null || echo "${total_size_bytes}B")
+    total_size=$(du -sh "$PROJECTS_DIR" 2>/dev/null | cut -f1)
     local startups=""
     if [ -f "$CLAUDE_JSON" ]; then
         startups=$(CLAUDE_JSON_PATH="$CLAUDE_JSON" python3 -c '
@@ -1148,7 +1172,6 @@ cmd_help() {
     echo -e "  agents list [-a] [-n N]      List projects (-a=all, -n=limit)"
     echo -e "  agents show [path|num]       Show sessions for a project"
     echo -e "  agents tree [path] [-d N]    Directory tree annotated with sessions"
-    echo -e "  agents go <letter|num>       Resume last session for a project"
     echo -e "  agents resume <num>          Resume a session from last show"
     echo -e "  agents stats                 Show usage statistics"
     echo -e "  agents man                   Full manual page"
@@ -1205,7 +1228,6 @@ show_suggestions() {
 
     case "$cmd" in
         list)
-            echo -e "  ${GREEN}agents go <letter>${RESET}    ${DIM}Resume last session for a project${RESET}"
             echo -e "  ${GREEN}agents show <num>${RESET}     ${DIM}View sessions for a project${RESET}"
             echo -e "  ${GREEN}agents tree <num>${RESET}     ${DIM}Tree view with files + sessions${RESET}"
             echo -e "  ${GREEN}agents stats${RESET}          ${DIM}See usage statistics${RESET}"
@@ -1263,11 +1285,6 @@ case "${1:-list}" in
         shift
         cmd_resume "$@"
         # Don't show suggestions after resume (launches claude)
-        ;;
-    go|g|start)
-        shift
-        cmd_quick_resume "$@"
-        # Don't show suggestions after go (launches agent)
         ;;
     stats)
         cmd_stats

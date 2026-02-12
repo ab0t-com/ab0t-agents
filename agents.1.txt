@@ -1,0 +1,387 @@
+================================================================================
+AGENTS(1)                  Coding Agent Utilities                    AGENTS(1)
+================================================================================
+
+NAME
+    agents - coding agent session browser, manager and launcher
+
+SYNOPSIS
+    agents [COMMAND] [OPTIONS] [ARGUMENTS]
+
+    agents list [-a|--all] [-n NUM]
+    agents show [PATH|LETTER|NUM]
+    agents tree [PATH|LETTER|NUM] [-d|--depth NUM] [-a|--all]
+    agents resume NUM [QUERY]
+    agents stats
+    agents help
+    agents man
+
+VERSION
+    1.0.0
+
+DESCRIPTION
+    agents is a command-line utility for browsing, managing, and resuming
+    coding agent sessions. It supports multiple agents (Claude Code, Codex,
+    and more via adapters) and provides a unified view across all of them.
+
+    It helps you track and resume work across multiple codebases, see usage
+    statistics, and quickly jump back into any session regardless of which
+    agent was used.
+
+SUPPORTED AGENTS
+    Claude Code     Sessions in ~/.claude/projects/ (JSONL files)
+    Codex           Sessions in ~/.codex/sessions/ (JSONL files)
+
+    New agents can be added by writing an adapter in scripts/adapters/.
+    Each adapter normalizes the agent's session data into a common format.
+
+QUICK START
+    agents                      # List your recent projects
+    agents show .               # Show sessions for current directory
+    agents show c               # Show sessions for project [c]
+    agents resume 1             # Resume session #1 from last show
+    agents stats                # Usage statistics across all agents
+
+STABLE PROJECT IDENTIFIERS
+    Each project is assigned a stable letter ID (a, b, c, ... aa, ab, ...)
+    the first time it appears in 'agents list'. This letter persists across
+    runs even when the recency order changes.
+
+    Use letters for reliable reference:
+        agents show c               # Always the same project
+        agents tree c               # Works with tree too
+
+    Positional numbers also work (by current recency order):
+        agents show 3               # 3rd most recent project
+
+    Letters are stored in ~/.ab0t/.agents/project_letters.json.
+
+EXAMPLES BY USE CASE
+
+  "Where are my projects?"
+    agents                      # List 10 most recent projects
+    agents list                 # Same as above
+    agents list -a              # List ALL projects (not just 10)
+    agents list -n 20           # List 20 most recent projects
+    agents ls                   # Short alias for list
+
+  "What sessions do I have here?"
+    agents show .               # Sessions in current directory
+    agents show                 # Same as above (. is default)
+    agents s .                  # Short alias
+    agents show c               # Sessions for project [c] from list
+    agents show 3               # Sessions for 3rd most recent project
+    agents show /home/user/foo  # Sessions for specific path
+
+  "Show me everything about this project"
+    agents tree .               # Tree view: sessions + files (depth 4)
+    agents tree                 # Same as above
+    agents t .                  # Short alias
+    agents tree c               # Tree for project [c] from list
+    agents tree . -d 2          # Shallow tree (depth 2)
+    agents tree . -d 6          # Deeper tree (depth 6)
+    agents tree . -a            # Include .venv, node_modules, etc.
+
+  "I want to continue a session"
+    agents resume 1             # Resume session #1 from last 'show'
+    agents r 1                  # Short alias
+    agents resume 2 "continue"  # Resume #2 with initial message
+    agents r 1 "fix the bug"    # Resume #1 and start with query
+
+    Resume dispatches to the correct agent automatically:
+        Claude sessions  ->  claude -r <session-id>
+        Codex sessions   ->  codex resume <session-id>
+
+  "How much have I used coding agents?"
+    agents stats                # Stats across all agents
+                                # Shows tokens, time, models, activity
+
+  Workflow: Start of day - find where you left off
+    agents                      # 1. See recent projects
+    agents show a               # 2. Check project [a]
+    agents resume 1             # 3. Continue where you left off
+
+  Workflow: Switch between projects
+    agents list                 # 1. See all projects with letters
+    agents show c               # 2. Check project [c]'s sessions
+    agents resume 2             # 3. Resume session #2
+
+COMMANDS
+    list, ls
+        List all projects that have coding agent sessions, sorted by most
+        recent activity. Shows stable letter ID, project path, time since
+        last activity, session count, and agent badges.
+
+        Each project shows which agents have sessions there:
+            [claude]    Claude Code sessions
+            [codex]     Codex sessions
+
+        Projects used by multiple agents show all badges.
+
+        Options:
+            -a, --all       Show all projects (default: 10)
+            -n NUM          Limit to NUM projects
+
+    show, s
+        Show detailed session information for a specific project. Displays
+        each session with its agent badge, session ID, timestamp, size,
+        and a preview of the first user message.
+
+        Arguments:
+            PATH            Filesystem path to project
+            LETTER          Stable letter ID from 'agents list' (e.g. c)
+            NUM             Project number by recency from 'agents list'
+            .               Current working directory (default)
+
+        The output includes agent-specific resume hints at the bottom.
+
+    tree, t
+        Display a tree-style view combining Claude sessions with the project's
+        file structure. Sessions are shown with summaries, and files are
+        color-coded by type. Common bloat directories are automatically hidden.
+
+        Arguments:
+            PATH            Filesystem path to project
+            LETTER          Stable letter ID from 'agents list'
+            NUM             Project number by recency from 'agents list'
+            .               Current working directory (default)
+
+        Options:
+            -d, --depth N   Tree depth for files (default: 4)
+            -a, --all       Show hidden/ignored directories
+
+    resume, r
+        Resume a specific session. Use after 'agents show' to quickly
+        continue a conversation. Automatically detects which agent the
+        session belongs to and launches the correct CLI.
+
+        Arguments:
+            NUM             Session number from 'agents show'
+            QUERY           Optional: initial query for the session
+
+    stats
+        Display aggregate statistics across all coding agents:
+
+        Overview        Projects, sessions, subagents, storage size
+        Activity        Sessions today, this week, this month
+        Time            Total session time (excluding gaps > 1 hour),
+                        active time (agent response time), avg session
+        Token Usage     Input, output, cache hit rate, breakdown
+        Models          Usage distribution with bar chart
+        Top Projects    Most active projects
+        Recent          Latest sessions across all agents
+
+        Stats are cached per-session-file by mtime for fast repeat runs.
+
+    help
+        Show brief usage information and common examples.
+
+    man
+        Display this detailed manual page.
+
+MULTI-AGENT SUPPORT
+    agents uses an adapter system to support multiple coding agents. Each
+    adapter knows how to find, parse, and resume sessions for its agent.
+
+    Currently supported:
+        Claude Code     ~/.claude/projects/<encoded-path>/*.jsonl
+        Codex           ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+
+    All commands work across agents:
+        agents list     Merges projects from all agents
+        agents show     Shows sessions from all agents for a project
+        agents resume   Dispatches to the correct agent's resume command
+        agents stats    Aggregates statistics from all agents
+
+    Agent badges ([claude], [codex]) appear next to projects and sessions
+    so you can tell which agent was used.
+
+    Adding a new agent:
+        1. Create scripts/adapters/newagent.py implementing BaseAdapter
+        2. Add it to ALL_ADAPTERS in session-list.py, session-show.py,
+           and session-stats.py
+
+SESSION FILE FORMAT
+    Claude Code (.jsonl):
+        user        User input message
+        assistant   Claude's response (includes model, token usage)
+        system      System events (turn_duration, etc.)
+        summary     AI-generated session summary
+        file-history-snapshot   File state checkpoint
+
+    Codex (.jsonl):
+        session_meta    Session metadata (id, cwd, model, git info)
+        response_item   Messages (user/assistant/developer roles)
+        turn_context    Per-turn model and approval info
+        event_msg       Tool execution events
+        compacted       Context compaction markers
+
+COLOR CODING
+    Time indicators:
+        Green           Less than 1 hour ago
+        Yellow          Less than 24 hours ago
+        Gray            Older than 24 hours
+
+    File types (in tree view):
+        Blue            Directories
+        Green           Python (.py)
+        Yellow          JavaScript/TypeScript (.js, .ts, .jsx, .tsx)
+        Cyan            Config files (.json, .yaml, .yml, .toml)
+        White           Documentation (.md, .txt, .rst)
+        Magenta         Shell scripts (.sh, .bash)
+
+    Agent badges:
+        Cyan            [claude]
+        Green           [codex]
+
+HIDDEN DIRECTORIES
+    The following directories are automatically hidden in tree view:
+
+    Python:         .venv, venv, __pycache__, .pytest_cache, .mypy_cache,
+                    .tox, .eggs, *.egg-info
+
+    JavaScript:     node_modules, .next, .nuxt, .parcel-cache, .turbo,
+                    bower_components, .nyc_output
+
+    Build:          dist, build, target, coverage
+
+    IDE/Editor:     .git, .idea, .vscode, .svelte-kit
+
+    Other:          .cache, .sass-cache, vendor, .bundle
+
+    Use -a or --all to show these directories.
+
+EXAMPLES
+
+    List recent projects
+    --------------------
+        $ agents list
+
+        Coding Agent Projects
+        ────────────────────────────────────────────────────
+
+        [ a] /home/user/myproject
+             5m ago     sessions: 3  [claude]
+        [ b] /home/user/webapp
+             2h ago     sessions: 7  [claude] [codex]
+        [ c] /home/user/api-server
+             1d ago     sessions: 2  [codex]
+
+        Usage: agents show <letter>  or  agents show <path>
+
+
+    Show sessions for a project
+    ---------------------------
+        $ agents show b
+
+        Sessions in /home/user/webapp
+        ────────────────────────────────────────────────────
+
+        [ 1] [codex] 019c4a11
+             5m ago     2026-02-11 14:30  (2.1M)
+             "Help me refactor the authentication module..."
+        [ 2] [claude] a1b2c3d4
+             2d ago     2026-02-09 10:15  (890K)
+             "Fix the bug in the payment processing..."
+
+        ────────────────────────────────────────────────────
+        Resume:
+
+          cd /home/user/webapp && claude -c  # continue last claude session
+          cd /home/user/webapp && codex resume --last  # continue last codex
+          agents resume <num>  # resume specific session from above
+
+
+    Resume a session (auto-detects agent)
+    -------------------------------------
+        $ agents resume 1
+        Resuming codex session 019c4a11 in /home/user/webapp
+
+        cd "/home/user/webapp" && codex resume "019c4a11-..."
+
+        $ agents resume 2
+        Resuming claude session a1b2c3d4 in /home/user/webapp
+
+        cd "/home/user/webapp" && claude -r "a1b2c3d4-..."
+
+
+    View usage statistics
+    ---------------------
+        $ agents stats
+
+        Coding Agent Statistics
+        ────────────────────────────────────────────────────
+
+          Agents: claude(99), codex(2)
+
+         Overview
+          Projects:   29         Sessions:  101
+          Subagents: 496         Size:      631M
+          (since 2026-01-21)
+
+         Activity
+          Today:     6          This week: 39         This month: 101
+
+         Time
+          Session time: 13d 2h      (excludes gaps > 1h)
+          Active time:  1d 19h      (time agents spent responding)
+          Avg session: 3h 6m
+
+         Token Usage
+          Input:     3.6B       Output:    2.2M       Total: 3.6B
+          Cache hit: 95%
+
+         Models
+          opus-4-5             ████████████████░░░░ 25474 (71%)
+          opus-4-6             █████░░░░░░░░░░░░░░░  8592 (24%)
+          gpt-5.3-codex        ░░░░░░░░░░░░░░░░░░░░  1157 (3%)
+
+TIPS
+    Stable Letters
+        Letters persist forever. Even if a project drops off the default
+        top-10 list, its letter remains assigned. Use 'agents list -a'
+        to see all projects with their letters.
+
+    Quick Navigation
+        After running 'agents list', use letters or numbers immediately:
+        'agents show c' or 'agents tree c'.
+
+        After 'agents show', session numbers are cached for 'agents resume'.
+
+    Multi-Agent Projects
+        Some projects may have sessions from multiple agents. 'agents show'
+        displays all sessions sorted by recency regardless of agent.
+        'agents resume' automatically dispatches to the right CLI.
+
+    Session Size
+        Large session files (50M+) indicate long conversations with lots of
+        tool use. These are great candidates for resuming to continue
+        with full context preserved.
+
+ENVIRONMENT
+    AGENTS_INSTALL_DIR      Installation directory (default: ~/.local/bin)
+
+FILES
+    ~/.claude/projects/                 Claude Code session storage
+    ~/.codex/sessions/                  Codex session storage
+    ~/.claude.json                      Claude Code global configuration
+    ~/.ab0t/.agents/                    Cache directory
+    ~/.ab0t/.agents/projects_cache.json Cached project list
+    ~/.ab0t/.agents/sessions_cache.json Cached session list (for resume)
+    ~/.ab0t/.agents/project_letters.json Stable letter ID assignments
+    ~/.ab0t/.agents/stats_cache.json    Per-session stats cache
+
+SEE ALSO
+    claude(1) - Claude Code CLI
+    codex(1) - OpenAI Codex CLI
+    tree(1) - List directory contents in tree format
+
+BUGS
+    Report bugs at: https://github.com/ab0t-com/agents/issues
+
+AUTHOR
+    Generated with Claude Code
+
+================================================================================
+                               February 2026                          AGENTS(1)
+================================================================================

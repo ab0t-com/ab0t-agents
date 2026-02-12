@@ -111,3 +111,6 @@ yarn-error.log*
 !releases/*.tar.gz
 !releases/*.zip
 !releases/*.sha256
+
+# Claude data for testing
+.claude-data/
