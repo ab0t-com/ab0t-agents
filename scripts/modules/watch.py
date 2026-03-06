@@ -15,6 +15,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
                    human_size)
@@ -26,7 +27,7 @@ action = os.environ.get("ACTION", "watch")
 interval = int(os.environ.get("INTERVAL", "5"))
 project_filter = os.environ.get("PROJECT", "")
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 
 # Graceful exit
 running = True

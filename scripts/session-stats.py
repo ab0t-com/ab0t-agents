@@ -19,6 +19,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 total_size = os.environ.get("TOTAL_SIZE", "?")
 total_startups = os.environ.get("TOTAL_STARTUPS", "0")
@@ -39,7 +40,7 @@ R = "\033[0m"
 CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
 CACHE_FILE = os.path.join(CACHE_DIR, "stats_cache.json")
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 
 
 # --- Cache ---

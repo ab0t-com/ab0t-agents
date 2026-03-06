@@ -1047,6 +1047,10 @@ except: pass
                 cd "$project_path" && codex resume "$session_id"
             fi
             ;;
+        gemini)
+            echo -e "${DIM}cd \"$project_path\" && gemini --resume \"$session_id\"${RESET}"
+            cd "$project_path" && gemini --resume "$session_id"
+            ;;
         *)
             if [ -n "$query" ]; then
                 echo -e "${DIM}cd \"$project_path\" && claude -r \"$session_id\" \"$query\"${RESET}"
@@ -1063,9 +1067,10 @@ except: pass
 # cd's into the project dir, and resumes the last session (claude -c / codex resume --last)
 cmd_quick_resume() {
     local target="${1:-}"
+    local agent_override="${2:-}"
 
     if [ -z "$target" ]; then
-        echo -e "${RED}Usage: agents go <letter|num>${RESET}"
+        echo -e "${RED}Usage: agents go <letter|num> [claude|codex|gemini]${RESET}"
         echo -e "${DIM}Resume the last session for a project from the agents list.${RESET}"
         exit 1
     fi
@@ -1093,10 +1098,9 @@ try:
                 match = p
                 break
     if match:
-        # Pick primary agent: prefer claude, fall back to first available
         agents = match.get("agents", ["claude"])
-        agent = "claude" if "claude" in agents else agents[0]
-        print(match["path"] + "|" + agent)
+        # Print path and all available agents (pipe-separated)
+        print(match["path"] + "|" + ",".join(agents))
 except: pass
 ' 2>/dev/null)
 
@@ -1105,21 +1109,48 @@ except: pass
         exit 1
     fi
 
-    local project_path agent_name
+    local project_path available_agents agent_name
     project_path=$(echo "$resolved" | cut -d'|' -f1)
-    agent_name=$(echo "$resolved" | cut -d'|' -f2)
+    available_agents=$(echo "$resolved" | cut -d'|' -f2)
+
+    if [ -n "$agent_override" ]; then
+        # Validate override against available agents
+        if echo "$available_agents" | grep -qw "$agent_override"; then
+            agent_name="$agent_override"
+        else
+            echo -e "${RED}Agent '${agent_override}' not available for this project.${RESET}"
+            echo -e "${DIM}Available: ${available_agents}${RESET}"
+            exit 1
+        fi
+    else
+        # Default: prefer claude, fall back to first available
+        if echo "$available_agents" | grep -qw "claude"; then
+            agent_name="claude"
+        else
+            agent_name=$(echo "$available_agents" | cut -d',' -f1)
+        fi
+    fi
 
     echo -e "${CYAN}Resuming last ${BOLD}${agent_name}${RESET}${CYAN} session in ${YELLOW}$project_path${RESET}"
     echo
 
+    cd "$project_path" || { echo -e "${RED}Could not cd to $project_path${RESET}"; exit 1; }
+    echo -e "${GREEN}→ ${BOLD}$(pwd)${RESET}"
+    echo
+    sleep 1.5
+
     case "$agent_name" in
         codex)
-            echo -e "${DIM}cd \"$project_path\" && codex resume --last${RESET}"
-            cd "$project_path" && sleep 1 && codex resume --last
+            echo -e "${DIM}codex resume --last${RESET}"
+            exec codex resume --last
+            ;;
+        gemini)
+            echo -e "${DIM}gemini --resume${RESET}"
+            exec gemini --resume
             ;;
         *)
-            echo -e "${DIM}cd \"$project_path\" && claude -c${RESET}"
-            cd "$project_path" && sleep 1 && claude -c
+            echo -e "${DIM}claude -c --verbose${RESET}"
+            exec claude -c --verbose
             ;;
     esac
 }
@@ -1248,7 +1279,7 @@ cmd_help() {
     echo -e "  agents list [-a] [-n N]      List projects (-a=all, -n=limit)"
     echo -e "  agents show [path|num]       Show sessions for a project"
     echo -e "  agents tree [path] [-d N]    Directory tree annotated with sessions"
-    echo -e "  agents go <letter|num>       Resume last session for a project"
+    echo -e "  agents go <letter> [agent]    cd + resume last session (default: claude)"
     echo -e "  agents resume <num>          Resume a session from last show"
     echo -e "  agents stats                 Show usage statistics"
     echo -e "  agents man                   Full manual page"
@@ -1277,6 +1308,10 @@ cmd_help() {
     echo -e "  ${GREEN}agents show /home/me/app${RESET}        ${DIM}# sessions for a specific path${RESET}"
     echo -e "  ${GREEN}agents resume 1${RESET}                 ${DIM}# resume session #1 from last show${RESET}"
     echo -e "  ${GREEN}agents resume 2 \"fix the bug\"${RESET}  ${DIM}# resume with a query${RESET}"
+    echo
+    echo -e "  ${DIM}# Quick resume (agents go)${RESET}"
+    echo -e "  ${GREEN}agents go y${RESET}                     ${DIM}# cd + resume last session for project [y]${RESET}"
+    echo -e "  ${GREEN}agents go y codex${RESET}               ${DIM}# resume with codex instead of default${RESET}"
     echo
     echo -e "  ${DIM}# Typical workflow${RESET}"
     echo -e "  ${GREEN}agents${RESET}                          ${DIM}# 1. find your project${RESET}"
@@ -1336,7 +1371,7 @@ show_suggestions() {
 
     case "$cmd" in
         list)
-            echo -e "  ${GREEN}agents go <letter>${RESET}    ${DIM}Resume last session for a project${RESET}"
+            echo -e "  ${GREEN}agents go <letter>${RESET}    ${DIM}cd + resume last session for a project${RESET}"
             echo -e "  ${GREEN}agents show <num>${RESET}     ${DIM}View sessions for a project${RESET}"
             echo -e "  ${GREEN}agents tree <num>${RESET}     ${DIM}Tree view with files + sessions${RESET}"
             echo -e "  ${GREEN}agents stats${RESET}          ${DIM}See usage statistics${RESET}"

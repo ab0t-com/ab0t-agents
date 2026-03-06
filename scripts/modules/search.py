@@ -15,6 +15,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, GRAY, RED, BOLD, DIM, R,
                    time_ago, extract_text_from_record)
@@ -25,7 +26,7 @@ query = os.environ.get("QUERY", "")
 case_sensitive = os.environ.get("CASE_SENSITIVE", "false") == "true"
 max_results = int(os.environ.get("MAX_RESULTS", "20"))
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 now = time.time()
 
 

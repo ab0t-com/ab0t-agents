@@ -15,11 +15,12 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, GRAY, RED, BOLD, DIM, R,
                    CACHE_DIR, resolve_session as _resolve_session)
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 
 FORKS_DIR = os.path.join(CACHE_DIR, "forks")
 session_key = os.environ.get("SESSION_KEY", "")

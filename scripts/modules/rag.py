@@ -18,6 +18,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
                    CACHE_DIR, time_ago, human_size)
@@ -32,7 +33,7 @@ action = os.environ.get("ACTION", "query")
 query = os.environ.get("QUERY", "")
 max_results = int(os.environ.get("MAX_RESULTS", "5"))
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 
 # BM25 parameters
 K1 = 1.5

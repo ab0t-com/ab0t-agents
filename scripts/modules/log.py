@@ -14,13 +14,14 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, BLUE, GRAY, BOLD, DIM, R)
 
 period = os.environ.get("PERIOD", "today")
 limit = int(os.environ.get("LIMIT", "30"))
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 now = time.time()
 
 # Period filter

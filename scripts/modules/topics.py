@@ -16,6 +16,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
                    CACHE_DIR, time_ago, extract_text_from_record)
@@ -28,7 +29,7 @@ action = os.environ.get("ACTION", "detect")
 project_filter = os.environ.get("PROJECT", "all")
 topic_name = os.environ.get("TOPIC_NAME", "")
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 
 
 def extract_messages(fpath, agent_name, max_messages=30):

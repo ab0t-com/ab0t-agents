@@ -13,6 +13,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
                    agent_color, time_ago, get_first_message)
@@ -21,7 +22,7 @@ cwd = os.environ.get("CWD", os.getcwd())
 git_branch = os.environ.get("GIT_BRANCH", "")
 dry_run = os.environ.get("DRY_RUN", "false") == "true"
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 available = [a for a in ALL_ADAPTERS if a.is_available()]
 
 

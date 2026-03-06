@@ -17,6 +17,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 show_all = os.environ.get("SHOW_ALL", "false") == "true"
 limit = int(os.environ.get("LIMIT", "10"))
@@ -35,7 +36,7 @@ R = "\033[0m"
 CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
 LETTERS_FILE = os.path.join(CACHE_DIR, "project_letters.json")
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 available = [a for a in ALL_ADAPTERS if a.is_available()]
 
 if not available:
@@ -159,7 +160,7 @@ for path, info in sorted_projects:
 
 print()
 print(f"{DIM}Usage: agents show <letter>  or  agents show <path>{R}")
-print(f"{DIM}       agents go <letter>      resume last session for a project{R}")
+print(f"{DIM}       agents go <letter> [agent]  # resume last session (default: claude){R}")
 print(f"{DIM}       agents show <num> also works (by position){R}")
 print(f"{DIM}       agents list -a     (show all projects){R}")
 

@@ -17,6 +17,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 target = os.environ.get("TARGET", ".")
 if target == ".":
@@ -35,7 +36,7 @@ R = "\033[0m"
 
 CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 now = time.time()
 
 

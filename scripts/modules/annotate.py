@@ -16,6 +16,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
                    CACHE_DIR)
@@ -56,7 +57,7 @@ def resolve_session_id():
         except (OSError, json.JSONDecodeError, KeyError):
             pass
     # Try as direct session ID
-    for adapter in [ClaudeAdapter(), CodexAdapter()]:
+    for adapter in [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]:
         if not adapter.is_available():
             continue
         for display, fpath, mtime, is_agent in adapter.iter_all_sessions():

@@ -109,8 +109,12 @@ check_agent_data() {
         log_debug "Found ~/.codex directory"
         found=true
     fi
+    if [ -d "$HOME/.gemini" ]; then
+        log_debug "Found ~/.gemini directory"
+        found=true
+    fi
     if ! $found; then
-        log_warn "No coding agent data found (~/.claude or ~/.codex)"
+        log_warn "No coding agent data found (~/.claude, ~/.codex, or ~/.gemini)"
         echo -e "${DIM}  This is normal if you haven't used a coding agent yet.${RESET}"
         echo -e "${DIM}  The tool will work once you start using one.${RESET}"
         echo

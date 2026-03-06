@@ -17,6 +17,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, GRAY, RED, BOLD, DIM, R,
                    CACHE_DIR)
@@ -86,7 +87,7 @@ def fmt_cost(c):
 def cmd_cost():
     load_custom_pricing()
 
-    ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+    ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
     now = time.time()
 
     cutoff = {

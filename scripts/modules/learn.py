@@ -20,6 +20,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, GRAY, RED, BOLD, DIM, R,
                    CACHE_DIR, extract_text_from_record)
@@ -32,7 +33,7 @@ KNOWLEDGE_FILE = os.path.join(KNOWLEDGE_DIR, "knowledge.json")
 action = os.environ.get("ACTION", "scan")
 project_filter = os.environ.get("PROJECT", "all")
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 available = [a for a in ALL_ADAPTERS if a.is_available()]
 
 

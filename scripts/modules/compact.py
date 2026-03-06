@@ -15,13 +15,14 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
+from adapters.gemini import GeminiAdapter
 
 from utils import (WHITE, CYAN, GREEN, YELLOW, GRAY, RED, BOLD, DIM, R,
                    CACHE_DIR, resolve_session as _resolve_session, extract_text_from_record)
 from llm import get_llm, LLMError, ANTHROPIC_SMALL, OPENAI_SMALL
 from schemas import CompactOutput
 
-ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter(), GeminiAdapter()]
 
 COMPACT_DIR = os.path.join(CACHE_DIR, "compacted")
 
