@@ -9,6 +9,7 @@ Env vars: ACTION (tag/untag/note/star/unstar/list-tags/show/bookmarks),
 import os
 import sys
 import json
+import re
 import time
 from datetime import datetime
 
@@ -16,19 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
-
-CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   CACHE_DIR)
 ANNOTATIONS_FILE = os.path.join(CACHE_DIR, "annotations.json")
 
 action = os.environ.get("ACTION", "show")
@@ -115,7 +105,8 @@ def cmd_tag():
         raise SystemExit(1)
     annotations = load_annotations()
     ann = get_annotation(annotations, sid)
-    new_tags = [t.strip().lower() for t in tags_str.split(",") if t.strip()]
+    # Accept both comma-separated and space-separated tags
+    new_tags = [t.strip().lower() for t in re.split(r'[,\s]+', tags_str) if t.strip()]
     added = []
     for tag in new_tags:
         if tag not in ann["tags"]:
@@ -142,7 +133,7 @@ def cmd_untag():
         print(f"{GRAY}Session has no annotations.{R}")
         return
     ann = annotations[sid]
-    remove_tags = [t.strip().lower() for t in tags_str.split(",") if t.strip()]
+    remove_tags = [t.strip().lower() for t in re.split(r'[,\s]+', tags_str) if t.strip()]
     removed = []
     for tag in remove_tags:
         if tag in ann["tags"]:
@@ -322,23 +313,23 @@ def cmd_starred():
     print()
 
 
-# Dispatch
-actions = {
-    "tag": cmd_tag,
-    "untag": cmd_untag,
-    "note": cmd_note,
-    "star": cmd_star,
-    "unstar": cmd_unstar,
-    "bookmark": cmd_bookmark,
-    "show": cmd_show,
-    "list-tags": cmd_list_tags,
-    "starred": cmd_starred,
-}
+if __name__ == "__main__":
+    actions = {
+        "tag": cmd_tag,
+        "untag": cmd_untag,
+        "note": cmd_note,
+        "star": cmd_star,
+        "unstar": cmd_unstar,
+        "bookmark": cmd_bookmark,
+        "show": cmd_show,
+        "list-tags": cmd_list_tags,
+        "starred": cmd_starred,
+    }
 
-handler = actions.get(action)
-if handler:
-    handler()
-else:
-    print(f"{RED}Unknown action: {action}{R}")
-    print(f"{DIM}Actions: tag, untag, note, star, unstar, bookmark, show, list-tags, starred{R}")
-    raise SystemExit(1)
+    handler = actions.get(action)
+    if handler:
+        handler()
+    else:
+        print(f"{RED}Unknown action: {action}{R}")
+        print(f"{DIM}Actions: tag, untag, note, star, unstar, bookmark, show, list-tags, starred{R}")
+        raise SystemExit(1)

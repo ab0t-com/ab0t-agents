@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Topic Modeling - detect topics within and across sessions.
+Topic Modeling - LLM-powered semantic topic detection across sessions.
+Stage 1: Extract topics per session (Haiku)
+Stage 2: Consolidate into taxonomy across all sessions (Sonnet)
 Called by: agents topics [--project PATH]
 Env vars: ACTION (detect/list/show), PROJECT (path), TOPIC_NAME
 """
@@ -8,29 +10,18 @@ Env vars: ACTION (detect/list/show), PROJECT (path), TOPIC_NAME
 import os
 import sys
 import json
-import re
 import time
-import math
-from collections import Counter, defaultdict
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   CACHE_DIR, time_ago, extract_text_from_record)
+from llm import get_llm, LLMError, ANTHROPIC_SMALL, ANTHROPIC_LARGE, OPENAI_SMALL, OPENAI_LARGE
+from schemas import TopicExtractOutput, TopicConsolidateOutput
 
-CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
 TOPICS_FILE = os.path.join(CACHE_DIR, "topics.json")
 
 action = os.environ.get("ACTION", "detect")
@@ -39,165 +30,74 @@ topic_name = os.environ.get("TOPIC_NAME", "")
 
 ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
 
-# Stop words to filter
-STOP_WORDS = set("""
-a an the is was were be been being have has had do does did will would shall
-should may might can could am are it its this that these those i me my mine
-we our us you your he him his she her they them their what which who whom
-how when where why all each every both few many some any no not only very
-just also than too so if or and but for with from by at in on to of as
-""".split())
 
-# Technical stop words (common but not topic-bearing)
-TECH_STOP = set("""
-file files code function method class import return true false null none
-error line number string int type value key data list dict set
-var let const def self cls args kwargs print run test check get
-""".split())
-
-
-def extract_terms(text):
-    """Extract meaningful terms from text."""
-    # Tokenize: split on non-alphanumeric, keep meaningful tokens
-    tokens = re.findall(r'[a-zA-Z][a-zA-Z0-9_-]{2,}', text.lower())
-    # Filter stop words and very short tokens
-    return [t for t in tokens if t not in STOP_WORDS and t not in TECH_STOP and len(t) > 2]
-
-
-def extract_session_terms(fpath, agent_name):
-    """Extract all meaningful terms from a session file."""
-    terms = Counter()
-    msg_count = 0
-    first_ts = None
-    last_ts = None
-
+def extract_messages(fpath, agent_name, max_messages=30):
+    """Extract key messages from a session for topic detection."""
+    messages = []
     try:
         with open(fpath) as f:
             for line in f:
                 try:
-                    d = json.loads(line)
-                    ts_str = d.get("timestamp")
-                    if ts_str:
-                        try:
-                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-                            if first_ts is None or ts < first_ts:
-                                first_ts = ts
-                            if last_ts is None or ts > last_ts:
-                                last_ts = ts
-                        except ValueError:
-                            pass
-
-                    text = ""
-                    if agent_name == "claude":
-                        if d.get("type") == "user":
-                            content = d.get("message", {}).get("content", "")
-                            if isinstance(content, str):
-                                text = content
-                            elif isinstance(content, list):
-                                text = " ".join(
-                                    item.get("text", "")
-                                    for item in content
-                                    if isinstance(item, dict) and item.get("type") == "text"
-                                )
-                        elif d.get("type") == "assistant":
-                            content = d.get("message", {}).get("content", [])
-                            if isinstance(content, list):
-                                for item in content:
-                                    if isinstance(item, dict) and item.get("type") == "text":
-                                        text += " " + item.get("text", "")
-                    elif agent_name == "codex":
-                        if d.get("type") == "response_item":
-                            p = d.get("payload", d.get("item", {}))
-                            content = p.get("content", [])
-                            if isinstance(content, list):
-                                text = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-
-                    if text:
-                        msg_count += 1
-                        session_terms = extract_terms(text)
-                        terms.update(session_terms)
-
+                    record = json.loads(line)
+                    role, text = extract_text_from_record(record, agent_name)
+                    if role and text and role in ("user", "assistant"):
+                        messages.append({"role": role, "text": text[:300]})
                 except (json.JSONDecodeError, KeyError, TypeError):
                     pass
     except OSError:
         pass
-
-    return terms, msg_count, first_ts, last_ts
-
-
-def detect_topics(term_counts, top_n=5):
-    """Detect top topics from term frequency using TF weighting."""
-    if not term_counts:
-        return []
-    # Filter to meaningful terms (appeared at least 3 times)
-    meaningful = {t: c for t, c in term_counts.items() if c >= 3}
-    if not meaningful:
-        meaningful = dict(term_counts.most_common(top_n))
-    # Score: frequency weighted by term length (longer = more specific)
-    scored = {}
-    for term, count in meaningful.items():
-        specificity = min(2.0, len(term) / 5.0)
-        scored[term] = count * specificity
-    return sorted(scored, key=scored.get, reverse=True)[:top_n]
+    # Take first few + last few for coverage
+    if len(messages) > max_messages:
+        half = max_messages // 2
+        messages = messages[:half] + messages[-half:]
+    return messages
 
 
-def cluster_topics(all_sessions_topics):
-    """Cluster sessions by shared topics into topic threads."""
-    # Build topic → sessions mapping
-    topic_sessions = defaultdict(list)
-    for sid, info in all_sessions_topics.items():
-        for topic in info["topics"]:
-            topic_sessions[topic].append(sid)
-
-    # Merge closely related topics (e.g., "auth" and "authentication")
-    merged = {}
-    for topic in sorted(topic_sessions, key=lambda t: -len(topic_sessions[t])):
-        # Check if this topic is a prefix/suffix of an existing merged topic
-        found = False
-        for existing in merged:
-            if topic in existing or existing in topic:
-                merged[existing].update(topic_sessions[topic])
-                found = True
-                break
-        if not found:
-            merged[topic] = set(topic_sessions[topic])
-
-    return merged
+def stage_extract(llm, messages, agent, project):
+    """Stage 1: Extract topics from a single session."""
+    raw = llm.render_and_call_json("topics_extract", {
+        "agent": agent,
+        "project": project,
+        "messages": messages,
+    }, model=ANTHROPIC_SMALL if llm.provider == "anthropic" else OPENAI_SMALL,
+       max_tokens=512, temperature=0.2)
+    return TopicExtractOutput.from_dict(raw)
 
 
-def time_ago(ts):
-    s = int(time.time() - ts)
-    if s < 60:
-        return f"{s}s ago"
-    if s < 3600:
-        return f"{s // 60}m ago"
-    if s < 86400:
-        return f"{s // 3600}h ago"
-    if s < 604800:
-        return f"{s // 86400}d ago"
-    return f"{s // 604800}w ago"
-
-
-def fmt_duration(s):
-    s = int(s)
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    h, m = divmod(s, 3600)
-    m = m // 60
-    return f"{h}h {m}m" if m else f"{h}h"
+def stage_consolidate(llm, session_extracts):
+    """Stage 2: Consolidate per-session topics into a taxonomy."""
+    sessions_data = []
+    for s in session_extracts:
+        sessions_data.append({
+            "agent": s["agent"],
+            "project": s["project"],
+            "topics": [{"label": t.label, "category": t.category} for t in s["extract"].topics],
+            "technologies": s["extract"].technologies,
+            "domain": s["extract"].domain,
+        })
+    raw = llm.render_and_call_json("topics_label", {
+        "sessions": sessions_data,
+    }, model=ANTHROPIC_LARGE if llm.provider == "anthropic" else OPENAI_LARGE,
+       max_tokens=2048, temperature=0.2)
+    return TopicConsolidateOutput.from_dict(raw)
 
 
 def cmd_detect():
-    """Scan sessions and detect topics."""
+    """Scan sessions and detect topics using LLM."""
+    llm = get_llm()
+    if not llm.available():
+        print(f"{RED}No LLM API key found.{R}")
+        print(f"{DIM}Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable topic detection.{R}")
+        raise SystemExit(1)
+
     print(f"{BOLD}{CYAN}Detecting Topics...{R}")
     print(f"{DIM}{'─' * 52}{R}")
     print()
 
-    all_sessions = {}
+    # Stage 1: Extract topics per session
+    session_extracts = []
+    session_meta = {}  # sid -> metadata
     now = time.time()
-    week_ago = now - 604800
 
     for adapter in ALL_ADAPTERS:
         if not adapter.is_available():
@@ -209,64 +109,122 @@ def cmd_detect():
                 continue
 
             sid = os.path.basename(fpath).replace(".jsonl", "")
-            terms, msg_count, first_ts, last_ts = extract_session_terms(fpath, adapter.name)
-
-            if msg_count < 2:
+            messages = extract_messages(fpath, adapter.name)
+            if len(messages) < 3:
                 continue
 
-            topics = detect_topics(terms)
-            if topics:
-                all_sessions[sid] = {
-                    "topics": topics,
-                    "terms": terms,
+            a_color = CYAN if adapter.name == "claude" else GREEN
+            print(f"  {a_color}[{adapter.name}]{R} {WHITE}{sid[:8]}{R}", end="", flush=True)
+
+            try:
+                extract = stage_extract(llm, messages, adapter.name, display_path)
+                topic_labels = [t.label for t in extract.topics]
+                print(f"  {GREEN}{', '.join(topic_labels[:3])}{R}")
+
+                session_extracts.append({
+                    "sid": sid,
                     "agent": adapter.name,
                     "project": display_path,
                     "mtime": mtime,
-                    "first_ts": first_ts,
-                    "last_ts": last_ts,
-                    "msg_count": msg_count,
+                    "extract": extract,
+                })
+                session_meta[sid] = {
+                    "agent": adapter.name,
+                    "project": display_path,
+                    "mtime": mtime,
+                    "topics_raw": topic_labels,
+                    "technologies": extract.technologies,
+                    "domain": extract.domain,
                 }
+            except LLMError as e:
+                print(f"  {RED}failed{R}")
 
-    if not all_sessions:
+    if not session_extracts:
         print(f"  {GRAY}No sessions with detectable topics.{R}")
         return
 
-    # Cluster into topic threads
-    clusters = cluster_topics(all_sessions)
+    # Stage 2: Consolidate into taxonomy
+    print()
+    print(f"  {DIM}Consolidating {len(session_extracts)} sessions into topic taxonomy...{R}", flush=True)
 
-    # Filter to topics with 2+ sessions or very recent
-    significant = {}
-    for topic, sids in sorted(clusters.items(), key=lambda x: -len(x[1])):
-        if len(sids) >= 2 or any(all_sessions.get(s, {}).get("mtime", 0) > week_ago for s in sids):
-            significant[topic] = sids
+    try:
+        consolidated = stage_consolidate(llm, session_extracts)
+    except LLMError as e:
+        print(f"  {RED}Consolidation failed: {e}{R}")
+        # Fall back to raw topics
+        consolidated = None
 
-    # Save topics index
+    # Build topics data for storage
     topics_data = {
         "topics": {},
         "sessions": {},
         "scanned_at": datetime.utcnow().isoformat() + "Z",
     }
-    for topic, sids in significant.items():
-        latest_mtime = max(all_sessions[s]["mtime"] for s in sids if s in all_sessions)
-        projects = set(all_sessions[s]["project"] for s in sids if s in all_sessions)
-        agents = set(all_sessions[s]["agent"] for s in sids if s in all_sessions)
-        total_time = sum(
-            (all_sessions[s].get("last_ts", 0) or 0) - (all_sessions[s].get("first_ts", 0) or 0)
-            for s in sids if s in all_sessions
-        )
-        topics_data["topics"][topic] = {
-            "sessions": list(sids),
-            "projects": list(projects),
-            "agents": list(agents),
-            "latest_mtime": latest_mtime,
-            "total_time": max(0, total_time),
-        }
-    for sid, info in all_sessions.items():
+
+    if consolidated:
+        # Map consolidated topics back to sessions
+        for ct in consolidated.topics:
+            label = ct.label
+            # Find which sessions match this topic
+            matching_sids = []
+            for se in session_extracts:
+                raw_labels = [t.label.lower() for t in se["extract"].topics]
+                # Check if any raw topic overlaps semantically (simple word overlap)
+                ct_words = set(label.lower().split())
+                for rl in raw_labels:
+                    rl_words = set(rl.lower().split())
+                    if ct_words & rl_words:
+                        matching_sids.append(se["sid"])
+                        break
+
+            if not matching_sids:
+                # If no word overlap match, assign to sessions that had similar categories
+                for se in session_extracts:
+                    raw_cats = [t.category for t in se["extract"].topics]
+                    if ct.category in raw_cats:
+                        matching_sids.append(se["sid"])
+
+            topics_data["topics"][label] = {
+                "description": ct.description,
+                "category": ct.category,
+                "session_count": ct.session_count,
+                "technologies": ct.technologies,
+                "sessions": matching_sids[:20],
+                "projects": list(set(session_meta[s]["project"] for s in matching_sids if s in session_meta)),
+                "agents": list(set(session_meta[s]["agent"] for s in matching_sids if s in session_meta)),
+                "latest_mtime": max((session_meta[s]["mtime"] for s in matching_sids if s in session_meta), default=0),
+            }
+    else:
+        # Use raw topics as fallback
+        for se in session_extracts:
+            for t in se["extract"].topics:
+                label = t.label
+                if label not in topics_data["topics"]:
+                    topics_data["topics"][label] = {
+                        "description": "",
+                        "category": t.category,
+                        "session_count": 0,
+                        "technologies": se["extract"].technologies,
+                        "sessions": [],
+                        "projects": [],
+                        "agents": [],
+                        "latest_mtime": 0,
+                    }
+                td = topics_data["topics"][label]
+                td["sessions"].append(se["sid"])
+                td["session_count"] = len(td["sessions"])
+                td["projects"] = list(set(td["projects"] + [se["project"]]))
+                td["agents"] = list(set(td["agents"] + [se["agent"]]))
+                td["latest_mtime"] = max(td["latest_mtime"], se["mtime"])
+
+    for sid, meta in session_meta.items():
         topics_data["sessions"][sid] = {
-            "topics": info["topics"],
-            "agent": info["agent"],
-            "project": info["project"],
-            "mtime": info["mtime"],
+            "topics": meta["topics_raw"],
+            "agent": meta["agent"],
+            "project": meta["project"],
+            "mtime": meta["mtime"],
+            "technologies": meta["technologies"],
+            "domain": meta["domain"],
         }
 
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -274,36 +232,34 @@ def cmd_detect():
         json.dump(topics_data, f, indent=2)
 
     # Display
-    print(f"{BOLD}Recent Topics{R} {DIM}({len(significant)} detected from {len(all_sessions)} sessions){R}")
+    print()
+    topics = topics_data["topics"]
+    print(f"{BOLD}Topics{R} {DIM}({len(topics)} detected from {len(session_extracts)} sessions){R}")
     print()
 
-    for topic, sids in sorted(significant.items(), key=lambda x: -max(
-        all_sessions.get(s, {}).get("mtime", 0) for s in x[1]
-    ))[:15]:
-        session_count = len(sids)
-        projects = set(all_sessions[s]["project"] for s in sids if s in all_sessions)
-        agents = set(all_sessions[s]["agent"] for s in sids if s in all_sessions)
-        latest = max(all_sessions[s]["mtime"] for s in sids if s in all_sessions)
+    for label, info in sorted(topics.items(), key=lambda x: -x[1].get("latest_mtime", 0))[:15]:
+        scount = info.get("session_count", len(info.get("sessions", [])))
+        category = info.get("category", "")
+        desc = info.get("description", "")
+        techs = info.get("technologies", [])
+        latest = info.get("latest_mtime", 0)
+        agents = info.get("agents", [])
 
         agents_str = " ".join(
             f"{CYAN if a == 'claude' else GREEN}[{a}]{R}" for a in sorted(agents)
         )
-        age_str = time_ago(latest)
-        age_color = GREEN if (now - latest) < 86400 else (YELLOW if (now - latest) < 604800 else GRAY)
+        age_str = time_ago(latest) if latest else "?"
 
-        print(f"  {WHITE}{topic}{R}  {DIM}{session_count} session{'s' if session_count != 1 else ''}, "
-              f"{len(projects)} project{'s' if len(projects) != 1 else ''}{R}  {agents_str}")
-        print(f"    Last: {age_color}{age_str}{R}", end="")
-        # Show project names
-        for p in list(projects)[:3]:
-            short = os.path.basename(p) if p else "?"
-            print(f"  {BLUE}{short}{R}", end="")
-        if len(projects) > 3:
-            print(f" {DIM}+{len(projects) - 3} more{R}", end="")
-        print()
+        print(f"  {WHITE}{label}{R}  {DIM}({category}){R}  {agents_str}")
+        if desc:
+            print(f"    {GRAY}{desc[:70]}{R}")
+        if techs:
+            print(f"    {MAGENTA}{', '.join(techs[:5])}{R}", end="")
+        print(f"  {DIM}{scount} session{'s' if scount != 1 else ''}  {age_str}{R}")
         print()
 
     print(f"{DIM}Saved to {TOPICS_FILE}{R}")
+    llm.print_cost_summary()
 
 
 def cmd_list():
@@ -325,15 +281,16 @@ def cmd_list():
     print(f"{DIM}{'─' * 52}{R}")
     print()
 
-    for topic, info in sorted(topics.items(), key=lambda x: -x[1].get("latest_mtime", 0)):
-        scount = len(info["sessions"])
-        pcount = len(info["projects"])
+    for label, info in sorted(topics.items(), key=lambda x: -x[1].get("latest_mtime", 0)):
+        scount = info.get("session_count", len(info.get("sessions", [])))
+        category = info.get("category", "")
         latest = info.get("latest_mtime", 0)
         age_str = time_ago(latest) if latest else "?"
+        agents = info.get("agents", [])
         agents_str = " ".join(
-            f"{CYAN if a == 'claude' else GREEN}[{a}]{R}" for a in info.get("agents", [])
+            f"{CYAN if a == 'claude' else GREEN}[{a}]{R}" for a in sorted(agents)
         )
-        print(f"  {WHITE}{topic:20s}{R} {DIM}{scount} sessions, {pcount} projects{R}  {agents_str}  {GRAY}{age_str}{R}")
+        print(f"  {WHITE}{label:30s}{R} {DIM}({category}){R}  {DIM}{scount} sessions{R}  {agents_str}  {GRAY}{age_str}{R}")
 
     print()
     print(f"{DIM}Details: agents topics show <topic>{R}")
@@ -355,7 +312,7 @@ def cmd_show():
     topics = data.get("topics", {})
     sessions_data = data.get("sessions", {})
 
-    # Find matching topic (substring match)
+    # Find matching topic (case-insensitive substring)
     matched = None
     for t in topics:
         if topic_name.lower() in t.lower() or t.lower() in topic_name.lower():
@@ -367,20 +324,22 @@ def cmd_show():
         return
 
     info = topics[matched]
-    now = time.time()
 
     print(f"{BOLD}{CYAN}Topic: {WHITE}{matched}{R}")
     print(f"{DIM}{'─' * 52}{R}")
-    print(f"  {WHITE}Sessions:{R} {len(info['sessions'])}")
-    print(f"  {WHITE}Projects:{R} {', '.join(info.get('projects', []))}")
+    if info.get("description"):
+        print(f"  {GRAY}{info['description']}{R}")
+    print(f"  {WHITE}Category:{R}     {info.get('category', '?')}")
+    print(f"  {WHITE}Sessions:{R}     {info.get('session_count', len(info.get('sessions', [])))}")
+    if info.get("technologies"):
+        print(f"  {WHITE}Technologies:{R} {MAGENTA}{', '.join(info['technologies'])}{R}")
     print()
 
-    for sid in info["sessions"]:
+    for sid in info.get("sessions", []):
         sinfo = sessions_data.get(sid, {})
         agent = sinfo.get("agent", "?")
         project = sinfo.get("project", "?")
         mtime = sinfo.get("mtime", 0)
-        topics_list = sinfo.get("topics", [])
 
         a_color = CYAN if agent == "claude" else GREEN
         age_str = time_ago(mtime) if mtime else "?"
@@ -390,23 +349,23 @@ def cmd_show():
         if len(short_path) > 35:
             short_path = "..." + short_path[-32:]
         print(f"    {BLUE}{short_path}{R}")
-        other_topics = [t for t in topics_list if t != matched]
+        other_topics = [t for t in sinfo.get("topics", []) if t.lower() != matched.lower()]
         if other_topics:
             print(f"    {DIM}also: {', '.join(other_topics[:5])}{R}")
         print()
 
 
-# Dispatch
-actions = {
-    "detect": cmd_detect,
-    "list": cmd_list,
-    "show": cmd_show,
-}
+if __name__ == "__main__":
+    actions = {
+        "detect": cmd_detect,
+        "list": cmd_list,
+        "show": cmd_show,
+    }
 
-handler = actions.get(action)
-if handler:
-    handler()
-else:
-    print(f"{RED}Unknown action: {action}{R}")
-    print(f"{DIM}Actions: detect, list, show{R}")
-    raise SystemExit(1)
+    handler = actions.get(action)
+    if handler:
+        handler()
+    else:
+        print(f"{RED}Unknown action: {action}{R}")
+        print(f"{DIM}Actions: detect, list, show{R}")
+        raise SystemExit(1)

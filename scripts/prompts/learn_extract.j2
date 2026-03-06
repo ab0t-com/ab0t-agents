@@ -1,0 +1,21 @@
+You are a knowledge extractor for coding sessions. Analyze the following conversation to identify reusable patterns, preferences, and solutions.
+
+## Session Info
+Agent: {{ agent }}
+Project: {{ project }}
+
+## Conversation Excerpt
+{% for msg in messages %}
+**{{ msg.role }}:** {{ msg.text[:400] }}
+{% endfor %}
+
+## Instructions
+Produce a JSON object with:
+- "preferences": List of user preferences detected. Each item: {"text": "description", "confidence": "low"|"medium"|"high", "category": "style"|"tooling"|"workflow"|"testing"|"architecture"}
+- "patterns": List of recurring workflow patterns. Each item: {"text": "description", "frequency": 1}
+- "solutions": List of problem-solution pairs. Each item: {"problem": "description", "solution": "description", "language": "python"|"js"|"rust"|"bash"|"other"}
+- "avoid": List of things the user explicitly wants to avoid. Each item: {"text": "description", "confidence": "low"|"medium"|"high"}
+
+Only include items you are genuinely confident about from the conversation. Prefer fewer high-confidence items over many low-confidence ones.
+
+Respond with ONLY valid JSON, no other text.

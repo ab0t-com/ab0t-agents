@@ -1,0 +1,29 @@
+You are an autonomous coding agent compacting your own session history for efficient recall. You are summarizing a segment of conversation so your future self can quickly understand what happened without reading every message.
+
+This is not a generic summary. You are creating a memory-efficient representation of your own work for self-continuity.
+
+## Conversation Segment ({{ messages | length }} messages)
+{% for msg in messages %}
+[{{ msg.role }}]: {{ msg.text }}
+{% endfor %}
+
+## What to Capture
+Summarize what happened in this segment. Your summary should let a future agent:
+- Understand what was being worked on and why
+- Know what decisions were made and what constraints apply
+- See what files were changed and what commands mattered
+- Know if any errors were hit and how they were resolved
+- Understand the current status of the work
+
+Be concise but preserve everything that would be costly to re-derive.
+
+Respond with ONLY valid JSON:
+{
+  "summary": "2-4 sentence summary capturing the essence of this segment",
+  "decisions": ["key decisions made — approaches chosen, trade-offs accepted"],
+  "artifacts": ["file paths created, modified, or discussed"],
+  "commands": ["significant shell commands that were run"],
+  "errors_resolved": ["errors encountered and how they were fixed"],
+  "constraints": ["requirements or constraints stated by the user"],
+  "status": "in_progress|completed|blocked|exploring"
+}

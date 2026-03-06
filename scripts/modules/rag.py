@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RAG - Retrieval-Augmented Generation over session history.
-BM25-based keyword retrieval with no external dependencies.
+BM25-based keyword retrieval + LLM answer synthesis.
 Called by: agents rag <query> | agents rag --build
 Env vars: ACTION (query/build/status), QUERY, MAX_RESULTS (int)
 """
@@ -19,19 +19,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   CACHE_DIR, time_ago, human_size)
+from llm import get_llm, LLMError, ANTHROPIC_LARGE, OPENAI_LARGE
+from schemas import RAGOutput
 
-CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
 INDEX_DIR = os.path.join(CACHE_DIR, "rag")
 INDEX_FILE = os.path.join(INDEX_DIR, "index.json")
 DOCS_FILE = os.path.join(INDEX_DIR, "docs.json")
@@ -214,46 +206,33 @@ def cmd_build():
         json.dump(docs, f)
 
     index_size = os.path.getsize(INDEX_FILE) + os.path.getsize(DOCS_FILE)
-    if index_size > 1_000_000:
-        size_str = f"{index_size / 1_000_000:.1f}M"
-    else:
-        size_str = f"{index_size / 1_000:.0f}K"
 
     print(f"  {WHITE}Sessions:{R}   {total_sessions}")
     print(f"  {WHITE}Documents:{R}  {total_docs} chunks")
     print(f"  {WHITE}Vocabulary:{R} {len(inverted_index):,} terms")
-    print(f"  {WHITE}Index size:{R} {size_str}")
+    print(f"  {WHITE}Index size:{R} {human_size(index_size)}")
     print()
     print(f"{GREEN}Index built.{R} Query with: {CYAN}agents rag \"your question\"{R}")
 
 
-def cmd_query():
-    """Search the RAG index using BM25 scoring."""
-    if not query:
-        print(f"{RED}Usage: agents rag \"your query\"{R}")
-        print(f"{DIM}Build index first: agents rag --build{R}")
-        raise SystemExit(1)
-
-    # Load index
+def bm25_retrieve(query_text, max_chunks=10):
+    """Run BM25 retrieval and return ranked (doc, score) pairs."""
     try:
         with open(INDEX_FILE) as f:
             index_data = json.load(f)
         with open(DOCS_FILE) as f:
             docs = json.load(f)
     except (OSError, json.JSONDecodeError):
-        print(f"{RED}No index found. Build it first: agents rag --build{R}")
-        raise SystemExit(1)
+        return [], [], None
 
     inverted_index = index_data["inverted_index"]
     doc_lengths = {int(k): v for k, v in index_data["doc_lengths"].items()}
     avg_dl = index_data["avg_dl"]
     total_docs = index_data["total_docs"]
 
-    # Tokenize query
-    query_terms = tokenize(query)
+    query_terms = tokenize(query_text)
     if not query_terms:
-        print(f"{GRAY}No searchable terms in query.{R}")
-        return
+        return [], [], index_data
 
     # BM25 scoring
     scores = defaultdict(float)
@@ -263,81 +242,133 @@ def cmd_query():
         postings = inverted_index.get(term, [])
         if not postings:
             continue
-
-        # IDF: log((N - n + 0.5) / (n + 0.5) + 1)
         n = len(postings)
         idf = math.log((total_docs - n + 0.5) / (n + 0.5) + 1)
-
         for doc_id, tf in postings:
             dl = doc_lengths.get(doc_id, avg_dl)
-            # BM25 TF component
             tf_score = (tf * (K1 + 1)) / (tf + K1 * (1 - B + B * dl / avg_dl))
             scores[doc_id] += idf * tf_score
 
     if not scores:
-        print(f"{GRAY}No matches for: {query}{R}")
-        return
+        return [], [], index_data
 
-    # Apply recency boost (slight preference for recent sessions)
+    # Recency boost
     for doc_id in scores:
         doc = docs[doc_id]
         age_days = (now - doc.get("mtime", now)) / 86400
-        recency_boost = 1.0 + max(0, (30 - age_days) / 100)  # Up to 30% boost for recent
+        recency_boost = 1.0 + max(0, (30 - age_days) / 100)
         scores[doc_id] *= recency_boost
 
-    # Sort by score
+    # Sort by score, deduplicate by session
     ranked = sorted(scores.items(), key=lambda x: -x[1])
+    results = []
+    seen_sessions = set()
+
+    for doc_id, score in ranked:
+        if len(results) >= max_chunks:
+            break
+        doc = docs[doc_id]
+        sid = doc["session_id"]
+        if sid in seen_sessions:
+            continue
+        seen_sessions.add(sid)
+        results.append((doc, score))
+
+    return results, tokenize(query_text), index_data
+
+
+def llm_answer(llm, query_text, results):
+    """Use LLM to synthesize an answer from retrieved chunks."""
+    chunks = []
+    for doc, score in results:
+        chunks.append({
+            "agent": doc["agent"],
+            "project": doc["project"],
+            "score": round(score, 2),
+            "preview_user": doc.get("preview_user", ""),
+            "preview_asst": doc.get("preview_asst", ""),
+        })
+
+    raw = llm.render_and_call_json("rag_answer", {
+        "query": query_text,
+        "chunks": chunks,
+    }, model=ANTHROPIC_LARGE if llm.provider == "anthropic" else OPENAI_LARGE,
+       max_tokens=1024, temperature=0.3)
+    return RAGOutput.from_dict(raw)
+
+
+def cmd_query():
+    """Search the RAG index using BM25, then synthesize an answer with LLM."""
+    if not query:
+        print(f"{RED}Usage: agents rag \"your query\"{R}")
+        print(f"{DIM}Build index first: agents rag --build{R}")
+        raise SystemExit(1)
+
+    # Load index and run BM25 retrieval
+    results, query_terms, index_data = bm25_retrieve(query, max_chunks=max_results)
+
+    if index_data is None:
+        print(f"{RED}No index found. Build it first: agents rag --build{R}")
+        raise SystemExit(1)
+
+    if not results:
+        print(f"{GRAY}No matches for: {query}{R}")
+        return
 
     print(f"{BOLD}{CYAN}RAG Search: {WHITE}{query}{R}")
     print(f"{DIM}{'─' * 52}{R}")
     print()
 
-    shown = 0
-    seen_sessions = set()
+    # Try LLM answer synthesis
+    llm = get_llm()
+    answer = None
+    if llm.available():
+        print(f"  {DIM}Synthesizing answer from {len(results)} retrieved memories...{R}", flush=True)
+        try:
+            answer = llm_answer(llm, query, results)
+        except LLMError as e:
+            print(f"  {DIM}LLM synthesis failed, showing raw results{R}")
 
-    for doc_id, score in ranked:
-        if shown >= max_results:
-            break
-        doc = docs[doc_id]
+    # Display LLM answer if available
+    if answer:
+        conf_color = GREEN if answer.confidence == "high" else (YELLOW if answer.confidence == "medium" else GRAY)
+        print()
+        print(f"  {WHITE}{BOLD}Answer{R} {conf_color}({answer.confidence} confidence){R}")
+        print(f"  {WHITE}{answer.answer}{R}")
+        if answer.related_queries:
+            print()
+            print(f"  {DIM}Related queries:{R}")
+            for rq in answer.related_queries[:3]:
+                print(f"    {GRAY}→ {rq}{R}")
+        print()
+        print(f"  {DIM}Sources:{R}")
 
-        # Deduplicate by session (show best chunk per session)
-        sid = doc["session_id"]
-        if sid in seen_sessions:
-            continue
-        seen_sessions.add(sid)
-        shown += 1
-
+    # Display source results
+    for i, (doc, score) in enumerate(results, 1):
         agent = doc["agent"]
         project = doc["project"]
+        sid = doc["session_id"]
         mtime = doc.get("mtime", 0)
 
         a_color = CYAN if agent == "claude" else GREEN
-
-        # Time ago
-        age = int(now - mtime)
-        if age < 3600:
-            age_str = f"{age // 60}m ago"
-        elif age < 86400:
-            age_str = f"{age // 3600}h ago"
-        elif age < 604800:
-            age_str = f"{age // 86400}d ago"
-        else:
-            age_str = f"{age // 604800}w ago"
+        age_str = time_ago(mtime)
 
         short_project = project
         if len(short_project) > 35:
             short_project = "..." + short_project[-32:]
 
-        print(f"  {YELLOW}{shown}.{R} {a_color}[{agent}]{R} {BLUE}{short_project}{R}  "
-              f"{GRAY}{age_str}{R}  {DIM}(score: {score:.2f}){R}")
+        source_marker = ""
+        if answer and i in answer.sources:
+            source_marker = f" {GREEN}★{R}"
+
+        print(f"  {YELLOW}{i}.{R} {a_color}[{agent}]{R} {BLUE}{short_project}{R}  "
+              f"{GRAY}{age_str}{R}  {DIM}(score: {score:.2f}){R}{source_marker}")
         print(f"     {DIM}session {MAGENTA}{sid[:8]}{R}")
 
-        # Show previews with query term highlighting
         user_preview = doc.get("preview_user", "")
         asst_preview = doc.get("preview_asst", "")
 
         if user_preview:
-            # Highlight query terms
             highlighted = user_preview
             for term in query_terms:
                 pattern = re.compile(re.escape(term), re.IGNORECASE)
@@ -353,11 +384,14 @@ def cmd_query():
 
         print()
 
-    remaining = len(seen_sessions.union(set())) - shown
-    total_matches = len(set(docs[d]["session_id"] for d in scores))
+    total_docs = index_data.get("total_docs", 0)
+    total_sessions = index_data.get("total_sessions", "?")
     print(f"{DIM}{'─' * 52}{R}")
-    print(f"{BOLD}{shown}{R} results from {total_matches} matching sessions "
-          f"{DIM}(index: {total_docs} chunks from {index_data.get('total_sessions', '?')} sessions){R}")
+    print(f"{BOLD}{len(results)}{R} results "
+          f"{DIM}(index: {total_docs} chunks from {total_sessions} sessions){R}")
+
+    if llm.available() and llm.total_calls > 0:
+        llm.print_cost_summary()
 
 
 def cmd_status():
@@ -386,30 +420,25 @@ def cmd_status():
     docs_size = os.path.getsize(DOCS_FILE) if os.path.isfile(DOCS_FILE) else 0
     total_size = index_size + docs_size
 
-    if total_size > 1_000_000:
-        size_str = f"{total_size / 1_000_000:.1f}M"
-    else:
-        size_str = f"{total_size / 1_000:.0f}K"
-
     print(f"  {WHITE}Built:{R}       {built_at}")
     print(f"  {WHITE}Sessions:{R}    {total_sessions}")
     print(f"  {WHITE}Chunks:{R}      {total_docs:,}")
     print(f"  {WHITE}Vocabulary:{R}  {vocab_size:,} terms")
-    print(f"  {WHITE}Index size:{R}  {size_str}")
+    print(f"  {WHITE}Index size:{R}  {human_size(total_size)}")
     print()
     print(f"{DIM}Rebuild: agents rag --build{R}")
 
 
-# Dispatch
-actions = {
-    "query": cmd_query,
-    "build": cmd_build,
-    "status": cmd_status,
-}
+if __name__ == "__main__":
+    actions = {
+        "query": cmd_query,
+        "build": cmd_build,
+        "status": cmd_status,
+    }
 
-handler = actions.get(action)
-if handler:
-    handler()
-else:
-    print(f"{RED}Unknown action: {action}{R}")
-    raise SystemExit(1)
+    handler = actions.get(action)
+    if handler:
+        handler()
+    else:
+        print(f"{RED}Unknown action: {action}{R}")
+        raise SystemExit(1)

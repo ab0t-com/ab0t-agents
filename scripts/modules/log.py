@@ -15,20 +15,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
+from utils import (WHITE, CYAN, GREEN, YELLOW, BLUE, GRAY, BOLD, DIM, R)
+
 period = os.environ.get("PERIOD", "today")
 limit = int(os.environ.get("LIMIT", "30"))
-
-# ANSI
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
 
 ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
 now = time.time()
@@ -116,102 +106,101 @@ def fmt_duration(s):
     return f"{h}h {m}m" if m else f"{h}h"
 
 
-# Collect sessions
-entries = []  # (mtime, display_path, fpath, agent_name, session_id)
+def cmd_log():
+    # Collect sessions
+    entries = []  # (mtime, display_path, fpath, agent_name, session_id)
 
-for adapter in ALL_ADAPTERS:
-    if not adapter.is_available():
-        continue
-    for display_path, fpath, mtime, is_agent in adapter.iter_all_sessions():
-        if is_agent:
+    for adapter in ALL_ADAPTERS:
+        if not adapter.is_available():
             continue
-        if mtime < cutoff:
-            continue
+        for display_path, fpath, mtime, is_agent in adapter.iter_all_sessions():
+            if is_agent:
+                continue
+            if mtime < cutoff:
+                continue
 
-        sid = os.path.basename(fpath).replace(".jsonl", "")
-        if adapter.name == "codex":
-            try:
-                with open(fpath) as f:
-                    first = json.loads(f.readline())
-                    if first.get("type") == "session_meta":
-                        sid = first.get("payload", {}).get("id", sid)
-            except (OSError, json.JSONDecodeError):
-                pass
-        entries.append((mtime, display_path, fpath, adapter.name, sid))
+            sid = os.path.basename(fpath).replace(".jsonl", "")
+            if adapter.name == "codex":
+                try:
+                    with open(fpath) as f:
+                        first = json.loads(f.readline())
+                        if first.get("type") == "session_meta":
+                            sid = first.get("payload", {}).get("id", sid)
+                except (OSError, json.JSONDecodeError):
+                    pass
+            entries.append((mtime, display_path, fpath, adapter.name, sid))
 
-entries.sort(key=lambda x: -x[0])
+    entries.sort(key=lambda x: -x[0])
 
-if not entries:
-    print(f"{GRAY}No sessions found for period: {period}{R}")
-    raise SystemExit(0)
+    if not entries:
+        print(f"{GRAY}No sessions found for period: {period}{R}")
+        raise SystemExit(0)
 
-# Group by date
-from collections import OrderedDict
-days = OrderedDict()
-for mtime, display_path, fpath, aname, sid in entries[:limit]:
-    day = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-    if day not in days:
-        days[day] = []
-    days[day].append((mtime, display_path, fpath, aname, sid))
+    # Group by date
+    days = {}
+    day_order = []
+    for mtime, display_path, fpath, aname, sid in entries[:limit]:
+        day = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+        if day not in days:
+            days[day] = []
+            day_order.append(day)
+        days[day].append((mtime, display_path, fpath, aname, sid))
 
-period_label = {
-    "today": "Today",
-    "week": "This Week",
-    "month": "This Month",
-    "all": "All Time",
-}.get(period, period)
+    period_label = {
+        "today": "Today",
+        "week": "This Week",
+        "month": "This Month",
+        "all": "All Time",
+    }.get(period, period)
 
-print(f"{BOLD}{CYAN}Activity Log{R} {DIM}({period_label}){R}")
-print(f"{DIM}{'─' * 52}{R}")
+    print(f"{BOLD}{CYAN}Activity Log{R} {DIM}({period_label}){R}")
+    print(f"{DIM}{'─' * 52}{R}")
 
-total_active = 0
-total_sessions = 0
+    total_active = 0
+    total_sessions = 0
 
-for day, day_entries in days.items():
-    # Day header
-    day_dt = datetime.strptime(day, "%Y-%m-%d")
-    weekday = day_dt.strftime("%A")
-    is_today = day == datetime.now().strftime("%Y-%m-%d")
-    day_label = "Today" if is_today else f"{weekday} {day}"
-    print(f"\n{BOLD}{WHITE}{day_label}{R}")
+    for day in day_order:
+        day_entries = days[day]
+        # Day header
+        day_dt = datetime.strptime(day, "%Y-%m-%d")
+        weekday = day_dt.strftime("%A")
+        is_today = day == datetime.now().strftime("%Y-%m-%d")
+        day_label = "Today" if is_today else f"{weekday} {day}"
+        print(f"\n{BOLD}{WHITE}{day_label}{R} {DIM}({len(day_entries)} sessions){R}")
 
-    for mtime, display_path, fpath, aname, sid in day_entries:
-        total_sessions += 1
-        a_color = CYAN if aname == "claude" else GREEN
-        time_str = datetime.fromtimestamp(mtime).strftime("%H:%M")
+        for mtime, display_path, fpath, aname, sid in day_entries:
+            total_sessions += 1
+            a_color = CYAN if aname == "claude" else GREEN
+            time_str = datetime.fromtimestamp(mtime).strftime("%H:%M")
 
-        msg = get_first_msg(fpath, aname)
-        if len(msg) > 45:
-            msg = msg[:42] + "..."
+            msg = get_first_msg(fpath, aname)
+            if len(msg) > 45:
+                msg = msg[:42] + "..."
 
-        # Shorten path
-        path_display = display_path
-        if len(path_display) > 30:
-            path_display = "..." + path_display[-27:]
+            # Shorten path
+            path_display = display_path
+            if len(path_display) > 30:
+                path_display = "..." + path_display[-27:]
 
-        active, _, _ = get_session_duration(fpath)
-        total_active += active
-        dur_str = fmt_duration(active) if active > 0 else ""
+            active, _, _ = get_session_duration(fpath)
+            total_active += active
+            dur_str = fmt_duration(active) if active > 0 else ""
 
-        size = os.path.getsize(fpath) if os.path.isfile(fpath) else 0
-        if size > 1_000_000:
-            size_str = f"{size / 1_000_000:.1f}M"
-        elif size > 1_000:
-            size_str = f"{size / 1_000:.0f}K"
-        else:
-            size_str = f"{size}B"
+            print(f"  {DIM}{time_str}{R}  {a_color}[{aname}]{R} {BLUE}{path_display}{R}", end="")
+            if dur_str:
+                print(f"  {DIM}{dur_str}{R}", end="")
+            print()
+            if msg:
+                print(f"         {GRAY}\"{msg}\"{R}")
 
-        print(f"  {DIM}{time_str}{R}  {a_color}[{aname}]{R} {BLUE}{path_display}{R}", end="")
-        if dur_str:
-            print(f"  {DIM}{dur_str}{R}", end="")
-        print()
-        if msg:
-            print(f"         {GRAY}\"{msg}\"{R}")
-
-print()
-print(f"{DIM}{'─' * 52}{R}")
-print(f"{BOLD}{total_sessions}{R} sessions", end="")
-if total_active > 0:
-    print(f", {CYAN}{fmt_duration(total_active)}{R} active time")
-else:
     print()
+    print(f"{DIM}{'─' * 52}{R}")
+    print(f"{BOLD}{total_sessions}{R} sessions", end="")
+    if total_active > 0:
+        print(f", {CYAN}{fmt_duration(total_active)}{R} active time")
+    else:
+        print()
+
+
+if __name__ == "__main__":
+    cmd_log()

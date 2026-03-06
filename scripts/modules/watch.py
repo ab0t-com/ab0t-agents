@@ -16,17 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   human_size)
 
 # Clear line ANSI
 CLEAR_LINE = "\033[2K\r"
@@ -69,12 +60,7 @@ def time_ago(ts):
 
 def get_session_size(fpath):
     try:
-        size = os.path.getsize(fpath)
-        if size > 1_000_000:
-            return f"{size / 1_000_000:.1f}M"
-        if size > 1_000:
-            return f"{size / 1_000:.0f}K"
-        return f"{size}B"
+        return human_size(os.path.getsize(fpath))
     except OSError:
         return "?"
 
@@ -299,15 +285,15 @@ def cmd_status():
     print(f"{DIM}Live watch: agents watch{R}")
 
 
-# Dispatch
-actions = {
-    "watch": cmd_watch,
-    "status": cmd_status,
-}
+if __name__ == "__main__":
+    actions = {
+        "watch": cmd_watch,
+        "status": cmd_status,
+    }
 
-handler = actions.get(action)
-if handler:
-    handler()
-else:
-    print(f"{RED}Unknown action: {action}{R}")
-    raise SystemExit(1)
+    handler = actions.get(action)
+    if handler:
+        handler()
+    else:
+        print(f"{RED}Unknown action: {action}{R}")
+        raise SystemExit(1)

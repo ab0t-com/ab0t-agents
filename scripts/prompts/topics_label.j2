@@ -1,0 +1,27 @@
+You are an autonomous coding agent building a topic map of your own work history. You have raw topic extractions from multiple sessions that need to be consolidated into a clean topic taxonomy.
+
+## Raw Topics from Sessions
+{% for session in sessions %}
+### Session {{ loop.index }} ({{ session.agent }}, {{ session.project }})
+Topics: {{ session.topics | map(attribute='label') | join(', ') }}
+Technologies: {{ session.technologies | join(', ') }}
+Domain: {{ session.domain }}
+{% endfor %}
+
+## Your Job
+Consolidate these raw topics into a clean taxonomy:
+- Merge topics that are clearly the same thing (e.g. "auth flow" and "authentication system")
+- Keep topics specific — don't over-generalize
+- Track how many sessions each consolidated topic spans
+- Assign meaningful categories
+
+Respond with ONLY valid JSON:
+{
+  "topics": [
+    {"label": "consolidated 2-5 word topic label",
+     "description": "one sentence describing what this topic covers",
+     "category": "feature|bugfix|refactor|infrastructure|docs|testing|exploration|devops",
+     "session_count": 3,
+     "technologies": ["related tools/frameworks"]}
+  ]
+}

@@ -1,0 +1,30 @@
+You are an autonomous coding agent analyzing your own session history to understand what topics and themes you've been working on.
+
+This is self-awareness — you are categorizing your own work to build a map of what you've been doing across sessions.
+
+## Session
+Agent: {{ agent }}
+Project: {{ project }}
+
+## Key Messages
+{% for msg in messages %}
+[{{ msg.role }}]: {{ msg.text }}
+{% endfor %}
+
+## What to Extract
+Identify the main topics of this session. Topics should be:
+- Specific enough to be useful ("JWT auth migration" not "authentication")
+- Technical and actionable ("React component refactor" not "frontend work")
+- Distinct from each other (don't list overlapping topics)
+
+Also identify the tools and technologies used — these help cluster related sessions.
+
+Respond with ONLY valid JSON:
+{
+  "topics": [
+    {"label": "2-5 word specific topic label",
+     "category": "feature|bugfix|refactor|infrastructure|docs|testing|exploration|devops"}
+  ],
+  "technologies": ["specific tools, frameworks, libraries used"],
+  "domain": "the broad domain — web, cli, data, ml, devops, mobile, etc"
+}

@@ -1,0 +1,32 @@
+You are an autonomous coding agent synthesizing context from multiple of your own past sessions. A new agent is about to start working on this project and needs a unified briefing — not a list of sessions, but a coherent understanding of the project state.
+
+## Project
+{{ project }}
+
+## Session Summaries
+{% for session in sessions %}
+### Session {{ loop.index }}: {{ session.agent }} ({{ session.time_ago }})
+First message: {{ session.first_message }}
+{% if session.summary %}Summary: {{ session.summary }}{% endif %}
+{% if session.files %}Files: {{ session.files | join(", ") }}{% endif %}
+{% endfor %}
+
+## Your Job
+Synthesize a unified project context. Don't just summarize each session — find the narrative:
+- What is the overall project state right now?
+- What's been accomplished across all sessions?
+- What's still in progress or unfinished?
+- What key files are central to the work?
+- What decisions were made that a new agent must respect?
+- What's blocking progress?
+
+Respond with ONLY valid JSON:
+{
+  "synthesized_context": "3-6 sentence unified summary of project state across all sessions",
+  "active_tasks": ["tasks currently in progress or unfinished"],
+  "completed_tasks": ["tasks that appear to be done"],
+  "key_files": ["most important files being worked on"],
+  "decisions": ["cross-session decisions that must be preserved"],
+  "blockers": ["unresolved issues or blockers"],
+  "recommended_next_steps": ["suggested next actions for a new agent"]
+}

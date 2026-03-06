@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Cross-Agent Context Bridge - transfer context between different coding agents.
+Cross-Agent Context Bridge - LLM-powered context transfer between agents.
 Called by: agents bridge <session> [--to codex|claude] [--format md|json]
-Env vars: SESSION_KEY, TARGET_AGENT (claude/codex), FORMAT (md/json)
+Env vars: SESSION_KEY, TARGET_AGENT (claude/codex), FORMAT (md/json), OUTPUT
 """
 
 import os
@@ -15,19 +15,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   CACHE_DIR, resolve_session as _resolve_session, extract_text_from_record)
+from llm import get_llm, LLMError, ANTHROPIC_SMALL, ANTHROPIC_LARGE, OPENAI_SMALL, OPENAI_LARGE
+from schemas import BridgeOutput
 
-CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+
 BRIDGE_DIR = os.path.join(CACHE_DIR, "bridges")
 
 session_key = os.environ.get("SESSION_KEY", "")
@@ -37,292 +31,230 @@ output = os.environ.get("OUTPUT", "")
 
 
 def resolve_session():
-    cache_file = os.path.join(CACHE_DIR, "sessions_cache.json")
-    if session_key.isdigit() and os.path.isfile(cache_file):
-        try:
-            with open(cache_file) as f:
-                sessions = json.load(f)
-            idx = int(session_key) - 1
-            if 0 <= idx < len(sessions):
-                s = sessions[idx]
-                return s.get("file", ""), s.get("agent", "claude"), s.get("path", "")
-        except (OSError, json.JSONDecodeError, KeyError):
-            pass
-    for adapter in [ClaudeAdapter(), CodexAdapter()]:
-        if not adapter.is_available():
-            continue
-        for display, fpath, mtime, is_agent in adapter.iter_all_sessions():
-            if is_agent:
-                continue
-            basename = os.path.basename(fpath).replace(".jsonl", "")
-            if basename.startswith(session_key) or session_key in basename:
-                return fpath, adapter.name, display
-    return "", "", ""
+    fpath, agent_name, project, _sid = _resolve_session(session_key, ALL_ADAPTERS)
+    return fpath, agent_name, project
 
 
-def extract_context(fpath, agent_name):
-    """Extract a portable context snapshot from a session."""
-    context = {
-        "decisions": [],
-        "files_modified": {},
-        "current_task": "",
-        "errors_resolved": [],
-        "key_messages": [],
-        "commands_run": [],
-        "git_info": {"branch": "", "commits": []},
-        "constraints": [],
-    }
-
+def extract_session_data(fpath, agent_name):
+    """Extract structured data from session for the handoff prompt."""
     messages = []
+    files_modified = {}
+    commands = []
+    current_task = ""
+    git_branch = ""
+
     try:
         with open(fpath) as f:
             for line in f:
                 try:
-                    d = json.loads(line)
-                    rec_type = d.get("type", "")
+                    record = json.loads(line)
 
                     # Git branch
-                    if d.get("gitBranch") and not context["git_info"]["branch"]:
-                        context["git_info"]["branch"] = d["gitBranch"]
+                    if record.get("gitBranch") and not git_branch:
+                        git_branch = record["gitBranch"]
 
-                    if agent_name == "claude":
-                        if rec_type == "user":
-                            content = d.get("message", {}).get("content", "")
-                            text = ""
-                            if isinstance(content, str):
-                                text = content
-                            elif isinstance(content, list):
-                                text = " ".join(
-                                    item.get("text", "")
-                                    for item in content
-                                    if isinstance(item, dict) and item.get("type") == "text"
-                                )
-                            if text:
-                                messages.append({"role": "user", "text": text})
-                                # First user message is usually the task
-                                if not context["current_task"]:
-                                    context["current_task"] = " ".join(text.split())[:200]
+                    role, text = extract_text_from_record(record, agent_name)
+                    if role and text:
+                        messages.append({"role": role, "text": text})
+                        if role == "user" and not current_task:
+                            current_task = " ".join(text.split())[:200]
 
-                        elif rec_type == "assistant":
-                            content = d.get("message", {}).get("content", [])
-                            if isinstance(content, list):
-                                asst_text = []
-                                for item in content:
-                                    if isinstance(item, dict):
-                                        if item.get("type") == "text":
-                                            asst_text.append(item.get("text", ""))
-                                        elif item.get("type") == "tool_use":
-                                            name = item.get("name", "")
-                                            inp = item.get("input", {})
-                                            if name in ("Write", "Edit"):
-                                                fp = inp.get("file_path", "")
-                                                if fp:
-                                                    if fp not in context["files_modified"]:
-                                                        context["files_modified"][fp] = 0
-                                                    context["files_modified"][fp] += 1
-                                            elif name == "Bash":
-                                                cmd = inp.get("command", "")
-                                                if cmd:
-                                                    context["commands_run"].append(cmd[:80])
-                                                    if "git commit" in cmd:
-                                                        context["git_info"]["commits"].append(cmd[:100])
-                                if asst_text:
-                                    messages.append({"role": "assistant", "text": " ".join(asst_text)})
-
-                    elif agent_name == "codex":
-                        if rec_type == "response_item":
-                            p = d.get("payload", d.get("item", {}))
-                            role = p.get("role", "")
-                            content = p.get("content", [])
-                            text = ""
-                            if isinstance(content, list):
-                                text = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-                            if text and role in ("user", "assistant"):
-                                messages.append({"role": role, "text": text})
-                                if role == "user" and not context["current_task"]:
-                                    context["current_task"] = " ".join(text.split())[:200]
+                    # Extract tool usage from Claude assistant messages
+                    if agent_name == "claude" and record.get("type") == "assistant":
+                        content = record.get("message", {}).get("content", [])
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "tool_use":
+                                    name = item.get("name", "")
+                                    inp = item.get("input", {})
+                                    if name in ("Write", "Edit"):
+                                        fp = inp.get("file_path", "")
+                                        if fp:
+                                            files_modified[fp] = files_modified.get(fp, 0) + 1
+                                    elif name == "Bash":
+                                        cmd = inp.get("command", "")
+                                        if cmd:
+                                            commands.append(cmd[:100])
 
                 except (json.JSONDecodeError, KeyError, TypeError):
                     pass
     except OSError:
         pass
 
-    # Extract decisions (look for decision-like patterns in assistant messages)
-    import re
-    for msg in messages:
-        if msg["role"] == "assistant":
-            text = msg["text"]
-            # Look for decision patterns
-            for pattern in [
-                r"(?:I'll|I will|Let's|We should|Going to)\s+(.{10,80})",
-                r"(?:Decision|Approach|Strategy):\s*(.{10,80})",
-            ]:
-                for m in re.finditer(pattern, text, re.IGNORECASE):
-                    decision = m.group(1).strip()
-                    if decision and len(context["decisions"]) < 10:
-                        context["decisions"].append(" ".join(decision.split())[:100])
-
-    # Extract errors resolved
-    for i, msg in enumerate(messages):
-        if msg["role"] == "user":
-            text_lower = msg["text"].lower()
-            if any(w in text_lower for w in ["error", "fix", "bug", "broken", "failed"]):
-                # Check if next assistant message resolves it
-                if i + 1 < len(messages) and messages[i + 1]["role"] == "assistant":
-                    context["errors_resolved"].append({
-                        "problem": " ".join(msg["text"].split())[:100],
-                        "resolution": " ".join(messages[i + 1]["text"].split())[:100],
-                    })
-
-    # Keep last few user messages as key context
-    user_msgs = [m for m in messages if m["role"] == "user"]
-    context["key_messages"] = [
-        " ".join(m["text"].split())[:150] for m in user_msgs[-5:]
-    ]
-
-    context["total_messages"] = len(messages)
-    return context
+    return {
+        "messages": messages,
+        "files_modified": files_modified,
+        "commands": commands,
+        "current_task": current_task,
+        "git_branch": git_branch,
+    }
 
 
-def format_markdown(context, source_agent, project, session_id, target):
-    """Format context as a markdown handoff document."""
+def format_markdown(handoff, source_agent, project, session_id, target):
+    """Format handoff as markdown document."""
     lines = []
     lines.append("# Context Handoff")
     lines.append("")
     lines.append(f"**From:** {source_agent} session `{session_id[:8]}`")
-    if target:
-        lines.append(f"**To:** {target}")
+    lines.append(f"**To:** {target}")
     lines.append(f"**Project:** {project}")
     lines.append(f"**Generated:** {datetime.utcnow().isoformat()}Z")
     lines.append("")
 
-    if context["current_task"]:
-        lines.append("## Current Task")
-        lines.append(context["current_task"])
+    lines.append("## Summary")
+    lines.append(handoff.handoff_summary)
+    lines.append("")
+
+    lines.append("## Current State")
+    lines.append(handoff.current_state)
+    lines.append("")
+
+    if handoff.next_steps:
+        lines.append("## Next Steps")
+        for i, step in enumerate(handoff.next_steps, 1):
+            lines.append(f"{i}. {step}")
         lines.append("")
 
-    if context["git_info"]["branch"]:
-        lines.append(f"**Git branch:** `{context['git_info']['branch']}`")
+    if handoff.important_context:
+        lines.append("## Important Context")
+        for ctx in handoff.important_context:
+            lines.append(f"- {ctx}")
         lines.append("")
 
-    if context["decisions"]:
-        lines.append("## Key Decisions")
-        for d in context["decisions"][:7]:
-            lines.append(f"- {d}")
+    if handoff.files_to_review:
+        lines.append("## Files to Review")
+        for f in handoff.files_to_review:
+            lines.append(f"- `{f}`")
         lines.append("")
 
-    if context["files_modified"]:
-        lines.append("## Files Modified")
-        for fp, count in sorted(context["files_modified"].items()):
-            lines.append(f"- `{fp}` ({count} edit{'s' if count > 1 else ''})")
-        lines.append("")
-
-    if context["errors_resolved"]:
-        lines.append("## Errors Resolved")
-        for err in context["errors_resolved"][:5]:
-            lines.append(f"- **Problem:** {err['problem']}")
-            lines.append(f"  **Fix:** {err['resolution']}")
-        lines.append("")
-
-    if context["constraints"]:
-        lines.append("## Constraints")
-        for c in context["constraints"]:
-            lines.append(f"- {c}")
-        lines.append("")
-
-    if context["key_messages"]:
-        lines.append("## Recent Context (last user messages)")
-        for msg in context["key_messages"]:
-            lines.append(f"- {msg}")
-        lines.append("")
-
-    if context["git_info"]["commits"]:
-        lines.append("## Git Commits During Session")
-        for c in context["git_info"]["commits"][:5]:
-            lines.append(f"- `{c}`")
+    if handoff.warnings:
+        lines.append("## Warnings")
+        for w in handoff.warnings:
+            lines.append(f"- {w}")
         lines.append("")
 
     lines.append("---")
-    lines.append(f"*{context['total_messages']} messages in original session*")
-
+    lines.append(f"*Generated by agents bridge*")
     return "\n".join(lines)
 
 
-def format_json(context, source_agent, project, session_id, target):
-    """Format context as structured JSON."""
+def format_json(handoff, source_agent, project, session_id, target):
+    """Format handoff as structured JSON."""
     return json.dumps({
         "handoff": {
             "from_agent": source_agent,
-            "to_agent": target or "any",
+            "to_agent": target,
             "session_id": session_id,
             "project": project,
             "generated": datetime.utcnow().isoformat() + "Z",
         },
-        "context": context,
+        "summary": handoff.handoff_summary,
+        "current_state": handoff.current_state,
+        "next_steps": handoff.next_steps,
+        "important_context": handoff.important_context,
+        "files_to_review": handoff.files_to_review,
+        "warnings": handoff.warnings,
     }, indent=2)
 
 
-# Main
-if not session_key:
-    print(f"{RED}Usage: agents bridge <session> [--to claude|codex] [--format md|json]{R}")
-    raise SystemExit(1)
+def cmd_bridge():
+    global target_agent
 
-fpath, agent_name, project = resolve_session()
-if not fpath or not os.path.isfile(fpath):
-    print(f"{RED}Could not find session: {session_key}{R}")
-    raise SystemExit(1)
+    if not session_key:
+        print(f"{RED}Usage: agents bridge <session> [--to claude|codex] [--format md|json]{R}")
+        raise SystemExit(1)
 
-session_id = os.path.basename(fpath).replace(".jsonl", "")
+    llm = get_llm()
+    if not llm.available():
+        print(f"{RED}No LLM API key found.{R}")
+        print(f"{DIM}Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable bridging.{R}")
+        raise SystemExit(1)
 
-# Auto-detect target if not specified
-if not target_agent:
-    target_agent = "codex" if agent_name == "claude" else "claude"
+    fpath, agent_name, project = resolve_session()
+    if not fpath or not os.path.isfile(fpath):
+        print(f"{RED}Could not find session: {session_key}{R}")
+        raise SystemExit(1)
 
-print(f"{BOLD}{CYAN}Context Bridge{R}")
-print(f"{DIM}{'─' * 52}{R}")
+    session_id = os.path.basename(fpath).replace(".jsonl", "")
 
-a_color = CYAN if agent_name == "claude" else GREEN
-t_color = CYAN if target_agent == "claude" else GREEN
+    if not target_agent:
+        target_agent = "codex" if agent_name == "claude" else "claude"
 
-print(f"  {a_color}[{agent_name}]{R} {WHITE}{session_id[:8]}{R}  →  {t_color}[{target_agent}]{R}")
-print(f"  {BLUE}{project}{R}")
-print()
+    print(f"{BOLD}{CYAN}Context Bridge{R}")
+    print(f"{DIM}{'─' * 52}{R}")
 
-# Extract context
-context = extract_context(fpath, agent_name)
+    a_color = CYAN if agent_name == "claude" else GREEN
+    t_color = CYAN if target_agent == "claude" else GREEN
 
-print(f"  {WHITE}Extracted:{R}")
-print(f"    {len(context['decisions'])} decisions")
-print(f"    {len(context['files_modified'])} files modified")
-print(f"    {len(context['errors_resolved'])} errors resolved")
-print(f"    {len(context['key_messages'])} key messages")
-print(f"    {len(context['commands_run'])} commands run")
-print()
+    print(f"  {a_color}[{agent_name}]{R} {WHITE}{session_id[:8]}{R}  →  {t_color}[{target_agent}]{R}")
+    print(f"  {BLUE}{project}{R}")
+    print()
 
-# Format output
-if fmt == "json":
-    result = format_json(context, agent_name, project, session_id, target_agent)
-else:
-    result = format_markdown(context, agent_name, project, session_id, target_agent)
+    # Extract session data
+    data = extract_session_data(fpath, agent_name)
 
-# Save or print
-if output and output != "-":
-    with open(output, "w") as f:
-        f.write(result)
-    print(f"{GREEN}Bridge document saved: {output}{R}")
-else:
-    os.makedirs(BRIDGE_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ext = "json" if fmt == "json" else "md"
-    bridge_file = os.path.join(BRIDGE_DIR, f"bridge-{session_id[:8]}-to-{target_agent}-{timestamp}.{ext}")
-    with open(bridge_file, "w") as f:
-        f.write(result)
-    print(f"{GREEN}Bridge document saved:{R}")
-    print(f"  {WHITE}{bridge_file}{R}")
+    print(f"  {DIM}Extracted: {len(data['messages'])} messages, "
+          f"{len(data['files_modified'])} files, {len(data['commands'])} commands{R}")
+    print(f"  {DIM}Generating handoff briefing...{R}", flush=True)
 
-print()
-print(f"{DIM}Use this to start a new {target_agent} session with context:{R}")
-if target_agent == "claude":
-    print(f'{DIM}  cd "{project}" && claude "Read {bridge_file} for context, then continue the work"{R}')
-elif target_agent == "codex":
-    print(f'{DIM}  cd "{project}" && codex "Read {bridge_file} for context, then continue the work"{R}')
+    # Build key messages for the prompt (last 10 user messages, truncated)
+    user_messages = [m["text"][:200] for m in data["messages"] if m["role"] == "user"][-10:]
+
+    # LLM handoff generation
+    try:
+        model = ANTHROPIC_LARGE if llm.provider == "anthropic" else OPENAI_LARGE
+        raw = llm.render_and_call_json("bridge_handoff", {
+            "source_agent": agent_name,
+            "target_agent": target_agent,
+            "project": project,
+            "current_task": data["current_task"],
+            "git_branch": data["git_branch"],
+            "key_messages": user_messages,
+            "files_modified": data["files_modified"],
+            "commands": data["commands"][-15:],
+        }, model=model, max_tokens=1536, temperature=0.3)
+        handoff = BridgeOutput.from_dict(raw)
+    except LLMError as e:
+        print(f"  {RED}Handoff generation failed: {e}{R}")
+        raise SystemExit(1)
+
+    # Format output
+    if fmt == "json":
+        result = format_json(handoff, agent_name, project, session_id, target_agent)
+    else:
+        result = format_markdown(handoff, agent_name, project, session_id, target_agent)
+
+    # Save
+    if output and output != "-":
+        with open(output, "w") as f:
+            f.write(result)
+        print(f"\n{GREEN}Bridge document saved: {output}{R}")
+        bridge_file = output
+    else:
+        os.makedirs(BRIDGE_DIR, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ext = "json" if fmt == "json" else "md"
+        bridge_file = os.path.join(BRIDGE_DIR, f"bridge-{session_id[:8]}-to-{target_agent}-{timestamp}.{ext}")
+        with open(bridge_file, "w") as f:
+            f.write(result)
+        print(f"\n{GREEN}Bridge document saved:{R}")
+        print(f"  {WHITE}{bridge_file}{R}")
+
+    # Show summary
+    print()
+    print(f"  {WHITE}Summary:{R} {handoff.handoff_summary[:100]}")
+    print(f"  {WHITE}State:{R}   {handoff.current_state[:100]}")
+    if handoff.next_steps:
+        print(f"  {WHITE}Next:{R}    {handoff.next_steps[0]}")
+    if handoff.warnings:
+        print(f"  {YELLOW}Warning:{R} {handoff.warnings[0]}")
+
+    print()
+    print(f"{DIM}Use this to start a new {target_agent} session with context:{R}")
+    print(f'{DIM}  cd "{project}" && {target_agent} "Read {bridge_file} for context, then continue the work"{R}')
+    print()
+    llm.print_cost_summary()
+
+
+if __name__ == "__main__":
+    cmd_bridge()

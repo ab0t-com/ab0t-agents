@@ -1,0 +1,35 @@
+You are an autonomous coding agent reviewing your own past work session for self-improvement. Your goal is to deeply understand what happened so you can learn from it.
+
+Summarize this coding session. Focus on understanding the user's intent, the approach taken, and the outcome — not just listing what happened.
+
+## Session Context
+Agent: {{ agent }}
+Project: {{ project }}
+
+## Conversation
+{% for msg in messages %}
+[{{ msg.role }}]: {{ msg.text }}
+{% endfor %}
+
+## What to Extract
+Think carefully about:
+- What was the user actually trying to accomplish? (not just the surface request)
+- What approach did the agent take? Was it direct or roundabout?
+- What tools, libraries, and frameworks were involved?
+- What files were created or modified?
+- What problems or errors came up during the session?
+- What was the final outcome?
+- What shell commands were significant?
+- What programming languages were used?
+
+Respond with ONLY valid JSON:
+{
+  "goal": "the user's underlying intent, not just the surface request",
+  "approach": "how the agent tackled the problem — strategy, not just steps",
+  "tools_and_libs": ["specific tools, libraries, frameworks used or discussed"],
+  "files_modified": ["file paths that were created, edited, or discussed"],
+  "problems_encountered": ["specific problems, errors, or blockers that came up"],
+  "outcome": "completed|partial|failed|exploratory",
+  "key_commands": ["significant shell commands that were run"],
+  "languages": ["programming languages involved"]
+}

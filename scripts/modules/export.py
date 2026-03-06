@@ -15,41 +15,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
+from utils import (RED, GREEN, DIM, BOLD, CYAN, R,
+                   resolve_session as _resolve_session)
+
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+
 session_key = os.environ.get("SESSION_KEY", "")
 fmt = os.environ.get("FORMAT", "md")
 output = os.environ.get("OUTPUT", "-")
 
-R = "\033[0m"
-RED = "\033[0;31m"
-GREEN = "\033[0;32m"
-DIM = "\033[2m"
-BOLD = "\033[1m"
-CYAN = "\033[0;36m"
-
 
 def resolve_session():
-    cache_file = os.path.join(CACHE_DIR, "sessions_cache.json")
-    if session_key.isdigit() and os.path.isfile(cache_file):
-        try:
-            with open(cache_file) as f:
-                sessions = json.load(f)
-            idx = int(session_key) - 1
-            if 0 <= idx < len(sessions):
-                s = sessions[idx]
-                return s.get("file", ""), s.get("agent", "claude"), s.get("path", "")
-        except (OSError, json.JSONDecodeError, KeyError):
-            pass
-    for adapter in [ClaudeAdapter(), CodexAdapter()]:
-        if not adapter.is_available():
-            continue
-        for display, fpath, mtime, is_agent in adapter.iter_all_sessions():
-            if is_agent:
-                continue
-            basename = os.path.basename(fpath).replace(".jsonl", "")
-            if basename.startswith(session_key) or session_key in basename:
-                return fpath, adapter.name, display
-    return "", "", ""
+    fpath, agent_name, project, _sid = _resolve_session(session_key, ALL_ADAPTERS)
+    return fpath, agent_name, project
 
 
 def extract_text(content):
@@ -201,31 +179,35 @@ def format_json(metadata, messages, project):
     }, indent=2)
 
 
-# Main
-if not session_key:
-    print(f"{RED}Usage: agents export <session-num|session-id> [--format md|txt|json]{R}")
-    raise SystemExit(1)
+def cmd_export():
+    if not session_key:
+        print(f"{RED}Usage: agents export <session-num|session-id> [--format md|txt|json]{R}")
+        raise SystemExit(1)
 
-fpath, agent_name, project = resolve_session()
-if not fpath or not os.path.isfile(fpath):
-    print(f"{RED}Could not find session: {session_key}{R}")
-    raise SystemExit(1)
+    fpath, agent_name, project = resolve_session()
+    if not fpath or not os.path.isfile(fpath):
+        print(f"{RED}Could not find session: {session_key}{R}")
+        raise SystemExit(1)
 
-if agent_name == "codex":
-    metadata, messages = parse_codex_session(fpath)
-else:
-    metadata, messages = parse_claude_session(fpath)
+    if agent_name == "codex":
+        metadata, messages = parse_codex_session(fpath)
+    else:
+        metadata, messages = parse_claude_session(fpath)
 
-if fmt == "json":
-    result = format_json(metadata, messages, project)
-elif fmt == "txt":
-    result = format_text(metadata, messages, project)
-else:
-    result = format_markdown(metadata, messages, project)
+    if fmt == "json":
+        result = format_json(metadata, messages, project)
+    elif fmt == "txt":
+        result = format_text(metadata, messages, project)
+    else:
+        result = format_markdown(metadata, messages, project)
 
-if output == "-":
-    print(result)
-else:
-    with open(output, "w") as f:
-        f.write(result)
-    print(f"{GREEN}Exported to {output}{R} ({len(messages)} messages, {fmt} format)")
+    if output == "-":
+        print(result)
+    else:
+        with open(output, "w") as f:
+            f.write(result)
+        print(f"{GREEN}Exported to {output}{R} ({len(messages)} messages, {fmt} format)")
+
+
+if __name__ == "__main__":
+    cmd_export()

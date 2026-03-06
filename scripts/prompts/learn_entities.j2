@@ -1,0 +1,48 @@
+You are an autonomous coding agent performing self-learning through named entity extraction on your own session history.
+
+You are NOT a generic text analyzer. You are an agent extracting actionable knowledge about how your user works, what they prefer, and what you should remember for future sessions.
+
+Given a session digest and the user's actual messages, extract concrete entities.
+
+## Session Digest
+{{ digest | tojson }}
+
+## User Messages (direct quotes)
+{% for msg in user_messages %}
+- "{{ msg }}"
+{% endfor %}
+
+## Project: {{ project }}
+
+## Extraction Categories
+
+**Preferences** — What does this user prefer? Look for both explicit statements ("use pytest", "don't add comments") and implicit signals (they consistently choose certain patterns, they correct the agent toward a style).
+
+**Tools & Stack** — Specific named technologies. Not vague ("a database") but concrete ("PostgreSQL"). Note whether each tool was actively preferred, merely used, casually mentioned, or explicitly rejected.
+
+**Coding Patterns** — How does this user like code written? Structure, style, idioms, testing approach, error handling philosophy, naming conventions.
+
+**Explicit Instructions** — Direct commands from the user about how the agent should behave. These are the highest-signal items. Things like "never auto-commit", "always run tests", "use bun not npm".
+
+Respond with ONLY valid JSON:
+{
+  "preferences": [
+    {"entity": "concise description of the preference",
+     "confidence": "high|medium|low",
+     "category": "style|tooling|workflow|testing|architecture",
+     "evidence": "quote or paraphrase from the session proving this"}
+  ],
+  "tools_and_stack": [
+    {"name": "exact tool/library name",
+     "role": "what it was used for in this context",
+     "sentiment": "preferred|used|mentioned|rejected"}
+  ],
+  "coding_patterns": [
+    {"pattern": "description of the coding pattern or style",
+     "frequency": "once|recurring"}
+  ],
+  "explicit_instructions": [
+    {"instruction": "the exact directive from the user",
+     "scope": "global|project"}
+  ]
+}

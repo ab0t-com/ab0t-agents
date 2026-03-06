@@ -54,11 +54,47 @@ CLAUDE_JSON="$HOME/.claude.json"
 
 # MAINTAINER: Remember to update agents.1.txt man page and bump this version
 # on any changes to the CLI interface, commands, or options.
-AGENTS_VERSION="1.0.0"
+AGENTS_VERSION="1.1.0"
 
 # Man page location (same directory as script, or /usr/local/share/man)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAN_PAGE="$SCRIPT_DIR/agents.1.txt"
+
+# ── Experimental mode ─────────────────────────────────
+# Gated features: LLM-powered modules + extended commands
+# Enable via: agents experimental on  (or AGENTS_EXPERIMENTAL=1)
+
+AGENTS_CONFIG="$HOME/.ab0t/.agents/config.json"
+
+is_experimental() {
+    # Env var override (always wins)
+    if [[ "${AGENTS_EXPERIMENTAL:-}" == "1" ]]; then
+        return 0
+    fi
+    # Check config file
+    if [[ -f "$AGENTS_CONFIG" ]]; then
+        AGENTS_CONFIG="$AGENTS_CONFIG" python3 -c '
+import os, json
+try:
+    with open(os.environ["AGENTS_CONFIG"]) as f:
+        cfg = json.load(f)
+    exit(0 if cfg.get("experimental") else 1)
+except: exit(1)
+' 2>/dev/null
+        return $?
+    fi
+    return 1
+}
+
+require_experimental() {
+    if is_experimental; then
+        return 0
+    fi
+    echo -e "${YELLOW}This is an experimental command.${RESET}"
+    echo -e "${DIM}Enable with: ${GREEN}agents experimental on${RESET}"
+    echo -e "${DIM}Or set:      ${GREEN}AGENTS_EXPERIMENTAL=1${RESET}"
+    exit 1
+}
 
 # Default ignored directories for tree view
 IGNORE_DIRS=".venv|venv|__pycache__|node_modules|.git|.idea|.vscode|.next|.nuxt|dist|build|target|.cache|.pytest_cache|.mypy_cache|.tox|.eggs|*.egg-info|.sass-cache|bower_components|vendor|.bundle|coverage|.nyc_output|.parcel-cache|.turbo|.svelte-kit"
@@ -975,7 +1011,7 @@ try:
     idx = int(os.environ["TARGET_NUM"]) - 1
     if 0 <= idx < len(sessions):
         s = sessions[idx]
-        print(f"{s[\"session_id\"]}|{s[\"path\"]}|{s[\"agent\"]}")
+        print(s["session_id"] + "|" + s["path"] + "|" + s["agent"])
 except: pass
 ' 2>/dev/null)
             if [ -n "$resolved" ]; then
@@ -1060,7 +1096,7 @@ try:
         # Pick primary agent: prefer claude, fall back to first available
         agents = match.get("agents", ["claude"])
         agent = "claude" if "claude" in agents else agents[0]
-        print(f"{match[\"path\"]}|{agent}")
+        print(match["path"] + "|" + agent)
 except: pass
 ' 2>/dev/null)
 
@@ -1135,6 +1171,70 @@ cmd_man() {
     fi
 }
 
+# Experimental toggle
+cmd_experimental() {
+    local action="${1:-status}"
+    case "$action" in
+        on|enable)
+            mkdir -p "$(dirname "$AGENTS_CONFIG")"
+            python3 -c '
+import os, json
+cfg_path = os.environ["AGENTS_CONFIG"]
+cfg = {}
+try:
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+except: pass
+cfg["experimental"] = True
+with open(cfg_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+' 2>/dev/null
+            echo -e "${GREEN}Experimental mode enabled.${RESET}"
+            echo -e "${DIM}LLM-powered commands are now available: search, rag, learn, blend, compact, bridge, topics${RESET}"
+            echo -e "${DIM}Plus: log, cost, diff, export, backup, continue, fork, thread, tags, config, workspace, watch${RESET}"
+            ;;
+        off|disable)
+            if [[ -f "$AGENTS_CONFIG" ]]; then
+                python3 -c '
+import os, json
+cfg_path = os.environ["AGENTS_CONFIG"]
+cfg = {}
+try:
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+except: pass
+cfg["experimental"] = False
+with open(cfg_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+' 2>/dev/null
+            fi
+            echo -e "${YELLOW}Experimental mode disabled.${RESET}"
+            ;;
+        status|"")
+            if is_experimental; then
+                echo -e "${GREEN}Experimental mode: ON${RESET}"
+                echo
+                echo -e "${BOLD}LLM-powered commands:${RESET}"
+                echo -e "  search, rag, learn, blend, compact, bridge, topics"
+                echo
+                echo -e "${BOLD}Extended commands:${RESET}"
+                echo -e "  log, cost, diff, export, backup, continue, fork, thread"
+                echo -e "  tag, untag, note, star, unstar, starred, bookmarks, tags"
+                echo -e "  config, workspace, watch"
+                echo
+                echo -e "${DIM}Disable with: agents experimental off${RESET}"
+            else
+                echo -e "${YELLOW}Experimental mode: OFF${RESET}"
+                echo -e "${DIM}Enable with: agents experimental on${RESET}"
+            fi
+            ;;
+        *)
+            echo -e "${RED}Usage: agents experimental [on|off|status]${RESET}"
+            exit 1
+            ;;
+    esac
+}
+
 # Help
 cmd_help() {
     echo -e "${BOLD}agents${RESET} - Claude Code session browser and launcher (v${AGENTS_VERSION})"
@@ -1183,6 +1283,37 @@ cmd_help() {
     echo -e "  ${GREEN}agents show 3${RESET}                   ${DIM}# 2. browse its sessions${RESET}"
     echo -e "  ${GREEN}agents resume 1${RESET}                 ${DIM}# 3. jump back in${RESET}"
     echo
+    echo -e "${BOLD}EXPERIMENTAL:${RESET}"
+    echo -e "  agents experimental [on|off]   Toggle experimental commands"
+    echo
+    if is_experimental; then
+        echo -e "${BOLD}EXPERIMENTAL COMMANDS ${GREEN}(enabled)${RESET}${BOLD}:${RESET}"
+        echo
+        echo -e "  ${WHITE}LLM-powered:${RESET}"
+        echo -e "  agents search <query>          Full-text search + LLM reranking"
+        echo -e "  agents rag <query>             RAG query over session history"
+        echo -e "  agents rag --build             Build/rebuild RAG index"
+        echo -e "  agents learn [--show|--apply]  Self-learning from session patterns"
+        echo -e "  agents blend <s1> <s2> [...]   Blend context from multiple sessions"
+        echo -e "  agents compact <session>       LLM-powered session compaction"
+        echo -e "  agents bridge <session> --to X Translate session between agents"
+        echo -e "  agents topics [list|show]      Topic modeling across sessions"
+        echo
+        echo -e "  ${WHITE}Extended:${RESET}"
+        echo -e "  agents log [--today|--week]    Activity timeline"
+        echo -e "  agents cost [--today|--week]   Cost/token tracking"
+        echo -e "  agents diff <session>          File diffs from a session"
+        echo -e "  agents export <session>        Export session to markdown/json"
+        echo -e "  agents backup [--list]         Backup/restore sessions"
+        echo -e "  agents continue                Resume last session in context"
+        echo -e "  agents fork <session>          Fork a session at a point"
+        echo -e "  agents thread <action>         Threaded conversations"
+        echo -e "  agents tag/untag/note/star     Session annotations"
+        echo -e "  agents config                  Configuration management"
+        echo -e "  agents workspace               Workspace management"
+        echo -e "  agents watch                   Session watchdog"
+        echo
+    fi
     echo -e "${BOLD}FILTERED DIRECTORIES:${RESET}"
     echo -e "  ${DIM}Auto-hidden in tree: .venv, node_modules, __pycache__, .git,${RESET}"
     echo -e "  ${DIM}dist, build, target, .cache, .pytest_cache, vendor, etc.${RESET}"
@@ -1209,11 +1340,19 @@ show_suggestions() {
             echo -e "  ${GREEN}agents show <num>${RESET}     ${DIM}View sessions for a project${RESET}"
             echo -e "  ${GREEN}agents tree <num>${RESET}     ${DIM}Tree view with files + sessions${RESET}"
             echo -e "  ${GREEN}agents stats${RESET}          ${DIM}See usage statistics${RESET}"
+            if is_experimental; then
+                echo -e "  ${GREEN}agents search <q>${RESET}     ${DIM}Search across all sessions${RESET}"
+                echo -e "  ${GREEN}agents log${RESET}             ${DIM}Activity timeline${RESET}"
+            fi
             ;;
         show)
             echo -e "  ${GREEN}agents resume <num>${RESET}   ${DIM}Resume a session from this list${RESET}"
             echo -e "  ${GREEN}agents tree ${context:-.}${RESET}      ${DIM}See project structure + sessions${RESET}"
             echo -e "  ${GREEN}agents list${RESET}           ${DIM}Browse other projects${RESET}"
+            if is_experimental; then
+                echo -e "  ${GREEN}agents export <num>${RESET}    ${DIM}Export session to markdown${RESET}"
+                echo -e "  ${GREEN}agents compact <num>${RESET}   ${DIM}Compact a long session${RESET}"
+            fi
             ;;
         tree)
             echo -e "  ${GREEN}agents show ${context:-.}${RESET}      ${DIM}Detailed session list${RESET}"
@@ -1223,6 +1362,10 @@ show_suggestions() {
         stats)
             echo -e "  ${GREEN}agents list -a${RESET}        ${DIM}See all projects${RESET}"
             echo -e "  ${GREEN}agents tree .${RESET}         ${DIM}Explore current directory${RESET}"
+            if is_experimental; then
+                echo -e "  ${GREEN}agents cost${RESET}            ${DIM}Cost/token breakdown${RESET}"
+                echo -e "  ${GREEN}agents topics${RESET}          ${DIM}Topic modeling${RESET}"
+            fi
             ;;
         resume)
             echo -e "  ${GREEN}agents show${RESET}           ${DIM}Pick a different session${RESET}"
@@ -1273,6 +1416,442 @@ case "${1:-list}" in
         cmd_stats
         show_suggestions "stats"
         ;;
+
+    # ── Experimental toggle ────────────────────────────────
+    experimental|exp|x)
+        shift
+        cmd_experimental "${1:-status}"
+        ;;
+
+    # ── Experimental: Search & Discovery ───────────────────
+    search|grep|find)
+        require_experimental
+        shift
+        query=""
+        case_sensitive="false"
+        max_results="10"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -i|--case-sensitive) case_sensitive="true"; shift ;;
+                -n|--max) max_results="${2:-10}"; shift 2 ;;
+                *) query="$1"; shift ;;
+            esac
+        done
+        QUERY="$query" CASE_SENSITIVE="$case_sensitive" MAX_RESULTS="$max_results" \
+            python3 "$SCRIPT_DIR/scripts/modules/search.py"
+        ;;
+
+    log)
+        require_experimental
+        shift
+        period="week"
+        limit="50"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --today) period="today"; shift ;;
+                --week) period="week"; shift ;;
+                --month) period="month"; shift ;;
+                --all) period="all"; shift ;;
+                -n|--limit) limit="${2:-50}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        PERIOD="$period" LIMIT="$limit" \
+            python3 "$SCRIPT_DIR/scripts/modules/log.py"
+        ;;
+
+    cost)
+        require_experimental
+        shift
+        period="all"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --today) period="today"; shift ;;
+                --week) period="week"; shift ;;
+                --month) period="month"; shift ;;
+                --all) period="all"; shift ;;
+                *) shift ;;
+            esac
+        done
+        PERIOD="$period" \
+            python3 "$SCRIPT_DIR/scripts/modules/cost.py"
+        ;;
+
+    diff)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        project=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --project|-p) project="${2:-}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        SESSION_KEY="$session_key" PROJECT="$project" \
+            python3 "$SCRIPT_DIR/scripts/modules/diff.py"
+        ;;
+
+    # ── Experimental: Export & Backup ──────────────────────
+    export)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        fmt="md"
+        output=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --format|-f) fmt="${2:-md}"; shift 2 ;;
+                --output|-o) output="${2:-}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        SESSION_KEY="$session_key" FORMAT="$fmt" OUTPUT="$output" \
+            python3 "$SCRIPT_DIR/scripts/modules/export.py"
+        ;;
+
+    backup)
+        require_experimental
+        shift
+        backup_action="create"
+        target=""
+        incremental="false"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --restore) backup_action="restore"; target="${2:-}"; shift 2 ;;
+                --list) backup_action="list"; shift ;;
+                --incremental) incremental="true"; shift ;;
+                *) shift ;;
+            esac
+        done
+        ACTION="$backup_action" TARGET="$target" INCREMENTAL="$incremental" \
+            python3 "$SCRIPT_DIR/scripts/modules/backup.py"
+        ;;
+
+    # ── Experimental: Session Management ───────────────────
+    continue|cont)
+        require_experimental
+        shift
+        dry_run="false"
+        cwd="$(pwd)"
+        git_branch=""
+        if command -v git &>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+            git_branch="$(git branch --show-current 2>/dev/null || true)"
+        fi
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --dry-run) dry_run="true"; shift ;;
+                *) shift ;;
+            esac
+        done
+        CWD="$cwd" GIT_BRANCH="$git_branch" DRY_RUN="$dry_run" \
+            python3 "$SCRIPT_DIR/scripts/modules/cont.py"
+        ;;
+
+    fork)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        fork_at=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --at) fork_at="${2:-}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        SESSION_KEY="$session_key" FORK_AT="$fork_at" \
+            python3 "$SCRIPT_DIR/scripts/modules/fork.py"
+        ;;
+
+    blend)
+        require_experimental
+        shift
+        sessions=""
+        mode="summary"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --mode|-m) mode="${2:-summary}"; shift 2 ;;
+                *)
+                    if [[ -n "$sessions" ]]; then
+                        sessions="$sessions,$1"
+                    else
+                        sessions="$1"
+                    fi
+                    shift
+                    ;;
+            esac
+        done
+        SESSIONS="$sessions" MODE="$mode" \
+            python3 "$SCRIPT_DIR/scripts/modules/blend.py"
+        ;;
+
+    # ── Experimental: Context & Knowledge ──────────────────
+    learn)
+        require_experimental
+        shift
+        learn_action="scan"
+        project="all"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --show) learn_action="show"; shift ;;
+                --apply) learn_action="apply"; shift ;;
+                --project|-p) project="${2:-all}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        ACTION="$learn_action" PROJECT="$project" \
+            python3 "$SCRIPT_DIR/scripts/modules/learn.py"
+        ;;
+
+    thread)
+        require_experimental
+        shift
+        thread_action="${1:-list}"
+        shift 2>/dev/null || true
+        thread_name=""
+        message=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --name|-n) thread_name="${2:-}"; shift 2 ;;
+                --message|-m) message="${2:-}"; shift 2 ;;
+                *)
+                    if [[ -z "$thread_name" ]]; then
+                        thread_name="$1"
+                    elif [[ -z "$message" ]]; then
+                        message="$1"
+                    fi
+                    shift
+                    ;;
+            esac
+        done
+        ACTION="$thread_action" THREAD_NAME="$thread_name" MESSAGE="$message" \
+            python3 "$SCRIPT_DIR/scripts/modules/thread.py"
+        ;;
+
+    rag)
+        require_experimental
+        shift
+        rag_action="query"
+        query=""
+        max_results="5"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --build) rag_action="build"; shift ;;
+                --status) rag_action="status"; shift ;;
+                -n|--max) max_results="${2:-5}"; shift 2 ;;
+                *) query="$1"; rag_action="query"; shift ;;
+            esac
+        done
+        ACTION="$rag_action" QUERY="$query" MAX_RESULTS="$max_results" \
+            python3 "$SCRIPT_DIR/scripts/modules/rag.py"
+        ;;
+
+    topics)
+        require_experimental
+        shift
+        topics_action="detect"
+        project="all"
+        topic_name=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                list) topics_action="list"; shift ;;
+                show) topics_action="show"; topic_name="${2:-}"; shift 2 ;;
+                --project|-p) project="${2:-all}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        ACTION="$topics_action" PROJECT="$project" TOPIC_NAME="$topic_name" \
+            python3 "$SCRIPT_DIR/scripts/modules/topics.py"
+        ;;
+
+    bridge)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        target_agent=""
+        fmt="md"
+        output=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --to) target_agent="${2:-}"; shift 2 ;;
+                --format|-f) fmt="${2:-md}"; shift 2 ;;
+                --output|-o) output="${2:-}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        SESSION_KEY="$session_key" TARGET_AGENT="$target_agent" FORMAT="$fmt" OUTPUT="$output" \
+            python3 "$SCRIPT_DIR/scripts/modules/bridge.py"
+        ;;
+
+    # ── Experimental: Session Annotations ──────────────────
+    tag)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        tags="${*:-}"
+        ACTION="tag" SESSION_KEY="$session_key" TAGS="$tags" \
+            python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        ;;
+
+    untag)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        tags="${*:-}"
+        ACTION="untag" SESSION_KEY="$session_key" TAGS="$tags" \
+            python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        ;;
+
+    note)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        note_text="${*:-}"
+        ACTION="note" SESSION_KEY="$session_key" NOTE_TEXT="$note_text" \
+            python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        ;;
+
+    star)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        ACTION="star" SESSION_KEY="$session_key" \
+            python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        ;;
+
+    unstar)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        ACTION="unstar" SESSION_KEY="$session_key" \
+            python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        ;;
+
+    starred)
+        require_experimental
+        ACTION="starred" \
+            python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        ;;
+
+    bookmarks|bm)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        bookmark_msg=""
+        if [[ $# -gt 1 ]]; then
+            shift
+            bookmark_msg="${*:-}"
+        fi
+        if [[ -n "$session_key" ]]; then
+            ACTION="bookmark" SESSION_KEY="$session_key" BOOKMARK_MSG="$bookmark_msg" \
+                python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        else
+            ACTION="show" \
+                python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        fi
+        ;;
+
+    tags)
+        require_experimental
+        ACTION="list-tags" \
+            python3 "$SCRIPT_DIR/scripts/modules/annotate.py"
+        ;;
+
+    # ── Experimental: Configuration ────────────────────────
+    config|cfg)
+        require_experimental
+        shift
+        config_action="${1:-check}"
+        shift 2>/dev/null || true
+        project=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --project|-p) project="${2:-}"; shift 2 ;;
+                *) config_action="$1"; shift ;;
+            esac
+        done
+        ACTION="$config_action" PROJECT="$project" \
+            python3 "$SCRIPT_DIR/scripts/modules/config.py"
+        ;;
+
+    # ── Experimental: Workspaces ───────────────────────────
+    workspace|ws)
+        require_experimental
+        shift
+        ws_action="${1:-list}"
+        shift 2>/dev/null || true
+        ws_name=""
+        session_key=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --name|-n) ws_name="${2:-}"; shift 2 ;;
+                *)
+                    if [[ -z "$ws_name" ]]; then
+                        ws_name="$1"
+                    elif [[ -z "$session_key" ]]; then
+                        session_key="$1"
+                    fi
+                    shift
+                    ;;
+            esac
+        done
+        ACTION="$ws_action" WS_NAME="$ws_name" SESSION_KEY="$session_key" \
+            python3 "$SCRIPT_DIR/scripts/modules/workspace.py"
+        ;;
+
+    # ── Experimental: Context Compaction ───────────────────
+    compact)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        shift 2>/dev/null || true
+        comp_strategy="size"
+        keep_last="30"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --strategy|-s) comp_strategy="${2:-size}"; shift 2 ;;
+                --keep-last|-k) keep_last="${2:-30}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        ACTION="compact" SESSION_KEY="$session_key" STRATEGY="$comp_strategy" KEEP_LAST="$keep_last" \
+            python3 "$SCRIPT_DIR/scripts/modules/compact.py"
+        ;;
+
+    uncompact)
+        require_experimental
+        shift
+        session_key="${1:-}"
+        ACTION="uncompact" SESSION_KEY="$session_key" \
+            python3 "$SCRIPT_DIR/scripts/modules/compact.py"
+        ;;
+
+    # ── Experimental: Watchdog ─────────────────────────────
+    watch)
+        require_experimental
+        shift
+        watch_action="watch"
+        watch_interval="5"
+        project=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --status) watch_action="status"; shift ;;
+                --interval|-i) watch_interval="${2:-5}"; shift 2 ;;
+                --project|-p) project="${2:-}"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        ACTION="$watch_action" INTERVAL="$watch_interval" PROJECT="$project" \
+            python3 "$SCRIPT_DIR/scripts/modules/watch.py"
+        ;;
+
     man)
         cmd_man
         ;;

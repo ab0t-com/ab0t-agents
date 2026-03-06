@@ -11,20 +11,12 @@ import json
 import time
 from datetime import datetime
 
-# ANSI
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-THREADS_DIR = os.path.expanduser("~/.ab0t/.agents/threads")
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   CACHE_DIR, time_ago)
+
+THREADS_DIR = os.path.join(CACHE_DIR, "threads")
 ARCHIVE_DIR = os.path.join(THREADS_DIR, ".archive")
 
 action = os.environ.get("ACTION", "list")
@@ -35,19 +27,6 @@ sender = os.environ.get("SENDER", "user")
 
 def thread_path(name):
     return os.path.join(THREADS_DIR, f"{name}.thread")
-
-
-def time_ago(ts):
-    s = int(time.time() - ts)
-    if s < 60:
-        return f"{s}s ago"
-    if s < 3600:
-        return f"{s // 60}m ago"
-    if s < 86400:
-        return f"{s // 3600}h ago"
-    if s < 604800:
-        return f"{s // 86400}d ago"
-    return f"{s // 604800}w ago"
 
 
 def read_thread(path):
@@ -255,19 +234,19 @@ def cmd_close():
     print(f"{DIM}Moved to: {archive_path}{R}")
 
 
-# Dispatch
-actions = {
-    "create": cmd_create,
-    "list": cmd_list,
-    "show": cmd_show,
-    "post": cmd_post,
-    "close": cmd_close,
-}
+if __name__ == "__main__":
+    actions = {
+        "create": cmd_create,
+        "list": cmd_list,
+        "show": cmd_show,
+        "post": cmd_post,
+        "close": cmd_close,
+    }
 
-handler = actions.get(action)
-if handler:
-    handler()
-else:
-    print(f"{RED}Unknown action: {action}{R}")
-    print(f"{DIM}Actions: create, list, show, post, close{R}")
-    raise SystemExit(1)
+    handler = actions.get(action)
+    if handler:
+        handler()
+    else:
+        print(f"{RED}Unknown action: {action}{R}")
+        print(f"{DIM}Actions: create, list, show, post, close{R}")
+        raise SystemExit(1)

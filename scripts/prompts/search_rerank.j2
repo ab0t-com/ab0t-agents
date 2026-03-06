@@ -1,0 +1,23 @@
+You are an autonomous coding agent reranking search results from your own session history. The initial ranking was done by keyword matching — your job is to understand the user's actual intent and reorder by true relevance.
+
+## Search Query
+{{ query }}
+
+## Candidate Results (ranked by keyword match)
+{% for result in results %}
+### Result {{ loop.index }} ({{ result.agent }}, {{ result.project }})
+Keyword score: {{ "%.2f" | format(result.score) }}
+Preview: {{ result.preview }}
+{% endfor %}
+
+## Your Job
+Rerank these results by actual relevance to what the user is looking for. Consider:
+- Does the result actually address the query's intent, not just contain the keywords?
+- Is the result about the same concept, or just happens to use the same words?
+- Exclude results that aren't truly relevant — don't include everything
+
+Respond with ONLY valid JSON:
+{
+  "ranked": [3, 1, 5],
+  "reasoning": "one sentence explaining why the top result is most relevant"
+}

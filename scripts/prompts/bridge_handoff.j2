@@ -1,0 +1,46 @@
+You are an autonomous coding agent handing off your work to another agent. You need to transfer the critical context so the receiving agent can continue seamlessly without re-discovering what you already know.
+
+Think of this as writing a briefing for your replacement. What do they absolutely need to know? What would waste their time to re-figure-out?
+
+## Your Session
+Agent: {{ source_agent }}
+Project: {{ project }}
+{% if git_branch %}Git branch: {{ git_branch }}{% endif %}
+
+## What You Worked On
+{{ current_task }}
+
+## Key Messages from the Session
+{% for msg in key_messages %}
+- {{ msg }}
+{% endfor %}
+
+## Files You Modified
+{% for f, count in files_modified.items() %}
+- {{ f }} ({{ count }} edit{{ "s" if count > 1 else "" }})
+{% endfor %}
+
+## Commands You Ran
+{% for cmd in commands %}
+- {{ cmd }}
+{% endfor %}
+
+## The Receiving Agent
+{{ target_agent }}
+
+## Your Job
+Write a handoff briefing. The receiving agent has never seen this codebase before. They need to:
+1. Understand the current situation immediately
+2. Know what to do next
+3. Not repeat your mistakes
+4. Know which files to read first
+
+Respond with ONLY valid JSON:
+{
+  "handoff_summary": "2-4 sentences — what's happening, what state things are in, what matters most",
+  "current_state": "1-2 sentences — exactly where you left off",
+  "next_steps": ["concrete actions the receiving agent should take, in order"],
+  "important_context": ["facts the receiving agent needs to know that aren't obvious from the code"],
+  "files_to_review": ["files the receiving agent should read first, most important first"],
+  "warnings": ["pitfalls, gotchas, or things that caused problems during your session"]
+}

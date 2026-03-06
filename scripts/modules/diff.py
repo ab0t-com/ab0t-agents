@@ -16,47 +16,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   resolve_session as _resolve_session)
 
-CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
+
 session_key = os.environ.get("SESSION_KEY", "")
 project_path = os.environ.get("PROJECT", "")
 
 
 def resolve_session():
-    """Resolve session key to (filepath, agent_name) using sessions_cache.json."""
-    cache_file = os.path.join(CACHE_DIR, "sessions_cache.json")
-    if session_key.isdigit() and os.path.isfile(cache_file):
-        try:
-            with open(cache_file) as f:
-                sessions = json.load(f)
-            idx = int(session_key) - 1
-            if 0 <= idx < len(sessions):
-                s = sessions[idx]
-                return s.get("file", ""), s.get("agent", "claude")
-        except (OSError, json.JSONDecodeError, KeyError):
-            pass
-    # Try as session ID - search for matching file
-    for adapter in [ClaudeAdapter(), CodexAdapter()]:
-        if not adapter.is_available():
-            continue
-        for display, fpath, mtime, is_agent in adapter.iter_all_sessions():
-            if is_agent:
-                continue
-            basename = os.path.basename(fpath).replace(".jsonl", "")
-            if basename.startswith(session_key) or session_key in basename:
-                return fpath, adapter.name
-    return "", ""
+    """Resolve session key to (filepath, agent_name)."""
+    fpath, agent_name, _project, _sid = _resolve_session(session_key, ALL_ADAPTERS)
+    return fpath, agent_name
 
 
 def extract_changes_claude(fpath):
@@ -190,97 +162,94 @@ def extract_changes_codex(fpath):
     }
 
 
-# Main
-if not session_key:
-    print(f"{RED}Usage: agents diff <session-num|session-id>{R}")
-    print(f"{DIM}Run 'agents show' first, then 'agents diff 1'{R}")
-    raise SystemExit(1)
+def cmd_diff():
+    if not session_key:
+        print(f"{RED}Usage: agents diff <session-num|session-id>{R}")
+        print(f"{DIM}Run 'agents show' first, then 'agents diff 1'{R}")
+        raise SystemExit(1)
 
-fpath, agent_name = resolve_session()
-if not fpath or not os.path.isfile(fpath):
-    print(f"{RED}Could not find session: {session_key}{R}")
-    print(f"{DIM}Run 'agents show' first to populate session cache.{R}")
-    raise SystemExit(1)
+    fpath, agent_name = resolve_session()
+    if not fpath or not os.path.isfile(fpath):
+        print(f"{RED}Could not find session: {session_key}{R}")
+        print(f"{DIM}Run 'agents show' first to populate session cache.{R}")
+        raise SystemExit(1)
 
-session_id = os.path.basename(fpath).replace(".jsonl", "")
+    session_id = os.path.basename(fpath).replace(".jsonl", "")
 
-if agent_name == "codex":
-    changes = extract_changes_codex(fpath)
-else:
-    changes = extract_changes_claude(fpath)
-
-# Display
-duration = ""
-if changes["start"] and changes["end"]:
-    delta = changes["end"] - changes["start"]
-    secs = int(delta.total_seconds())
-    if secs >= 3600:
-        duration = f"{secs // 3600}h {(secs % 3600) // 60}m"
-    elif secs >= 60:
-        duration = f"{secs // 60}m"
+    if agent_name == "codex":
+        changes = extract_changes_codex(fpath)
     else:
-        duration = f"{secs}s"
+        changes = extract_changes_claude(fpath)
 
-a_color = CYAN if agent_name == "claude" else GREEN
-badge = f"{a_color}[{agent_name}]{R}"
-date_str = changes["start"].strftime("%Y-%m-%d %H:%M") if changes["start"] else "unknown"
-
-print(f"{BOLD}{CYAN}Session Diff{R}")
-print(f"{DIM}{'─' * 52}{R}")
-print(f"  {badge} {WHITE}{session_id[:8]}{R} {DIM}{date_str}{R}", end="")
-if duration:
-    print(f" {DIM}({duration}){R}")
-else:
-    print()
-print()
-
-# Files
-if changes["files"]:
-    print(f"{BOLD}  Modified Files:{R}")
-    for fp, counts in sorted(changes["files"].items()):
-        total = counts["edits"] + counts["writes"]
-        parts = []
-        if counts["writes"]:
-            parts.append(f"{counts['writes']} write{'s' if counts['writes'] > 1 else ''}")
-        if counts["edits"]:
-            parts.append(f"{counts['edits']} edit{'s' if counts['edits'] > 1 else ''}")
-        detail = ", ".join(parts)
-        print(f"    {GREEN}{fp}{R}  {DIM}({detail}){R}")
-    print()
-else:
-    print(f"  {GRAY}No file modifications detected.{R}")
-    print()
-
-# Commands
-if changes["commands"]:
-    # Show unique commands (deduplicated, limited)
-    seen = set()
-    unique_cmds = []
-    for cmd in changes["commands"]:
-        short = cmd.strip()[:80]
-        if short not in seen:
-            seen.add(short)
-            unique_cmds.append(short)
-
-    print(f"{BOLD}  Commands Run:{R} {DIM}({len(changes['commands'])} total, {len(unique_cmds)} unique){R}")
-    for cmd in unique_cmds[:15]:
-        print(f"    {DIM}${R} {cmd}")
-    if len(unique_cmds) > 15:
-        print(f"    {DIM}... and {len(unique_cmds) - 15} more{R}")
-    print()
-
-# Git commits
-if changes["git_commits"]:
-    print(f"{BOLD}  Git Commits:{R}")
-    for cmd in changes["git_commits"]:
-        # Try to extract commit message
-        m = re.search(r'-m\s+["\']([^"\']+)["\']', cmd)
-        if m:
-            print(f"    {YELLOW}{m.group(1)}{R}")
+    # Display
+    duration = ""
+    if changes["start"] and changes["end"]:
+        delta = changes["end"] - changes["start"]
+        secs = int(delta.total_seconds())
+        if secs >= 3600:
+            duration = f"{secs // 3600}h {(secs % 3600) // 60}m"
+        elif secs >= 60:
+            duration = f"{secs // 60}m"
         else:
-            print(f"    {DIM}{cmd[:70]}{R}")
+            duration = f"{secs}s"
+
+    a_color = CYAN if agent_name == "claude" else GREEN
+    badge = f"{a_color}[{agent_name}]{R}"
+    date_str = changes["start"].strftime("%Y-%m-%d %H:%M") if changes["start"] else "unknown"
+
+    print(f"{BOLD}{CYAN}Session Diff{R}")
+    print(f"{DIM}{'─' * 52}{R}")
+    print(f"  {badge} {WHITE}{session_id[:8]}{R} {DIM}{date_str}{R}", end="")
+    if duration:
+        print(f" {DIM}({duration}){R}")
+    else:
+        print()
     print()
 
-# Summary
-print(f"{DIM}{'─' * 52}{R}")
-print(f"  {WHITE}{len(changes['files'])}{R} files  {WHITE}{len(changes['commands'])}{R} commands  {WHITE}{len(changes['git_commits'])}{R} commits")
+    if changes["files"]:
+        print(f"{BOLD}  Modified Files:{R}")
+        for fp, counts in sorted(changes["files"].items()):
+            parts = []
+            if counts["writes"]:
+                parts.append(f"{counts['writes']} write{'s' if counts['writes'] > 1 else ''}")
+            if counts["edits"]:
+                parts.append(f"{counts['edits']} edit{'s' if counts['edits'] > 1 else ''}")
+            detail = ", ".join(parts)
+            print(f"    {GREEN}{fp}{R}  {DIM}({detail}){R}")
+        print()
+    else:
+        print(f"  {GRAY}No file modifications detected.{R}")
+        print()
+
+    if changes["commands"]:
+        seen = set()
+        unique_cmds = []
+        for cmd in changes["commands"]:
+            short = cmd.strip()[:80]
+            if short not in seen:
+                seen.add(short)
+                unique_cmds.append(short)
+
+        print(f"{BOLD}  Commands Run:{R} {DIM}({len(changes['commands'])} total, {len(unique_cmds)} unique){R}")
+        for cmd in unique_cmds[:15]:
+            print(f"    {DIM}${R} {cmd}")
+        if len(unique_cmds) > 15:
+            print(f"    {DIM}... and {len(unique_cmds) - 15} more{R}")
+        print()
+
+    if changes["git_commits"]:
+        print(f"{BOLD}  Git Commits:{R}")
+        for cmd in changes["git_commits"]:
+            m = re.search(r'-m\s+["\']([^"\']+)["\']', cmd)
+            if m:
+                print(f"    {YELLOW}{m.group(1)}{R}")
+            else:
+                print(f"    {DIM}{cmd[:70]}{R}")
+        print()
+
+    print(f"{DIM}{'─' * 52}{R}")
+    print(f"  {WHITE}{len(changes['files'])}{R} files  {WHITE}{len(changes['commands'])}{R} commands  {WHITE}{len(changes['git_commits'])}{R} commits")
+
+
+if __name__ == "__main__":
+    cmd_diff()

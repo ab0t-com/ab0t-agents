@@ -4,7 +4,8 @@ Backup and restore coding agent session data.
 Called by: agents backup [--restore FILE] [--list] [--incremental]
 Env vars: ACTION (create/restore/list), TARGET (file for restore),
           INCREMENTAL (true/false), AGENT (claude/codex/all),
-          PROJECT (path or "all")
+          PROJECT (path or "all"), CONFIRM (true/false for restore),
+          CONFLICT (keep-newer/keep-backup/keep-both)
 """
 
 import os
@@ -15,18 +16,12 @@ import tarfile
 import hashlib
 from datetime import datetime
 
-# ANSI
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-BACKUP_DIR = os.path.expanduser("~/.ab0t/backups")
+from utils import (WHITE, CYAN, GREEN, YELLOW, GRAY, RED, BOLD, DIM, R,
+                   CACHE_DIR, human_size)
+
+BACKUP_DIR = os.path.join(CACHE_DIR, "backups")
 MANIFEST_FILE = os.path.join(BACKUP_DIR, "last_backup.json")
 
 action = os.environ.get("ACTION", "create")
@@ -34,6 +29,8 @@ target = os.environ.get("TARGET", "")
 incremental = os.environ.get("INCREMENTAL", "false") == "true"
 agent_filter = os.environ.get("AGENT", "all")
 project_filter = os.environ.get("PROJECT", "all")
+confirm = os.environ.get("CONFIRM", "false") == "true"
+conflict_mode = os.environ.get("CONFLICT", "keep-newer")  # keep-newer, keep-backup, keep-both
 
 # Data directories to back up
 DATA_DIRS = [
@@ -45,16 +42,6 @@ DATA_DIRS = [
     ("codex_history", os.path.expanduser("~/.codex/history.jsonl")),
     ("agents_cache", os.path.expanduser("~/.ab0t/.agents")),
 ]
-
-
-def human_size(n):
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.1f}G"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}K"
-    return f"{n}B"
 
 
 def dir_size(path):
@@ -238,6 +225,28 @@ def cmd_create():
     print(f"  {WHITE}Size:{R}     {human_size(backup_size)} {DIM}({human_size(total_size)} uncompressed){R}")
 
 
+def resolve_restore_path(arcname):
+    """Map archive label prefix back to the original filesystem path."""
+    label_to_dir = {
+        "claude_sessions": os.path.expanduser("~/.claude/projects"),
+        "claude_config": os.path.expanduser("~/.claude"),
+        "claude_global": os.path.expanduser("~"),
+        "codex_sessions": os.path.expanduser("~/.codex/sessions"),
+        "codex_config": os.path.expanduser("~/.codex"),
+        "codex_history": os.path.expanduser("~/.codex"),
+        "agents_cache": os.path.expanduser("~/.ab0t/.agents"),
+    }
+    parts = arcname.split("/", 1)
+    label = parts[0]
+    rest = parts[1] if len(parts) > 1 else ""
+    base = label_to_dir.get(label)
+    if not base:
+        return None
+    if rest:
+        return os.path.join(base, rest)
+    return base
+
+
 def cmd_restore():
     """Restore from a backup."""
     if not target:
@@ -263,15 +272,16 @@ def cmd_restore():
         print(f"{RED}Backup file not found: {target}{R}")
         raise SystemExit(1)
 
-    print(f"{BOLD}{CYAN}Restore Preview{R}")
+    print(f"{BOLD}{CYAN}Restore {'Preview' if not confirm else 'In Progress'}{R}")
     print(f"{DIM}{'─' * 52}{R}")
     print(f"  {WHITE}File:{R} {restore_file}")
     print(f"  {WHITE}Size:{R} {human_size(os.path.getsize(restore_file))}")
     print()
 
-    # List contents
     with tarfile.open(restore_file, "r:gz") as tar:
         members = tar.getmembers()
+
+        # Summary by label
         by_label = {}
         for m in members:
             label = m.name.split("/")[0] if "/" in m.name else m.name
@@ -282,15 +292,77 @@ def cmd_restore():
         for label, count in sorted(by_label.items()):
             print(f"  {WHITE}{label:20s}{R} {count} files")
 
-    print(f"\n  {DIM}Total: {len(members)} files{R}")
-    print(f"\n{YELLOW}Restore would extract files to their original locations.{R}")
-    print(f"{DIM}Run with --confirm to proceed.{R}")
+        print(f"\n  {DIM}Total: {len(members)} files{R}")
+
+        if not confirm:
+            print(f"\n{YELLOW}Restore would extract files to their original locations.{R}")
+            print(f"{DIM}Run with --confirm to proceed. Conflict mode: {conflict_mode}{R}")
+            return
+
+        # Actually restore
+        print(f"\n{DIM}Conflict mode: {conflict_mode}{R}")
+        print(f"{DIM}Restoring...{R}")
+
+        restored = 0
+        skipped = 0
+        conflicts = 0
+
+        for member in members:
+            if not member.isfile():
+                continue
+            dest = resolve_restore_path(member.name)
+            if not dest:
+                skipped += 1
+                continue
+
+            # Conflict resolution
+            if os.path.exists(dest):
+                conflicts += 1
+                if conflict_mode == "keep-newer":
+                    try:
+                        existing_mtime = os.path.getmtime(dest)
+                        backup_mtime = member.mtime
+                        if existing_mtime >= backup_mtime:
+                            skipped += 1
+                            continue
+                    except OSError:
+                        pass
+                elif conflict_mode == "keep-both":
+                    # Rename existing with .pre-restore suffix
+                    backup_path = dest + ".pre-restore"
+                    try:
+                        os.rename(dest, backup_path)
+                    except OSError:
+                        pass
+                elif conflict_mode == "keep-backup":
+                    pass  # overwrite existing with backup version
+
+            # Extract
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            try:
+                with tar.extractfile(member) as src:
+                    if src:
+                        with open(dest, "wb") as dst:
+                            dst.write(src.read())
+                        os.utime(dest, (member.mtime, member.mtime))
+                        restored += 1
+            except (OSError, KeyError) as e:
+                print(f"  {RED}Failed: {member.name}: {e}{R}")
+                skipped += 1
+
+    print()
+    print(f"{GREEN}{BOLD}Restore complete.{R}")
+    print(f"  {WHITE}Restored:{R}  {restored} files")
+    if conflicts:
+        print(f"  {WHITE}Conflicts:{R} {conflicts} ({conflict_mode})")
+    if skipped:
+        print(f"  {WHITE}Skipped:{R}   {skipped} files")
 
 
-# Dispatch
-if action == "list":
-    cmd_list()
-elif action == "restore":
-    cmd_restore()
-else:
-    cmd_create()
+if __name__ == "__main__":
+    if action == "list":
+        cmd_list()
+    elif action == "restore":
+        cmd_restore()
+    else:
+        cmd_create()

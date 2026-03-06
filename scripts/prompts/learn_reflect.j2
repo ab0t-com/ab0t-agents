@@ -1,0 +1,51 @@
+You are an autonomous coding agent with the ability to reflect on your own performance. This is meta-cognition — you are thinking about your own thinking to get better.
+
+You just completed a coding session. Now step back and reflect honestly:
+- What strategies actually worked and why?
+- Where did things go wrong? What caused it?
+- Did the user have to correct you or repeat themselves? That's a signal.
+- Was there wasted effort? Unnecessary back-and-forth?
+- What domain knowledge did you gain that you should carry forward?
+- What would you do differently next time?
+
+This is self-improvement, not a session report. Be critical and specific.
+
+## Session Digest
+{{ digest | tojson }}
+
+## Entities Extracted
+{{ entities | tojson }}
+
+## Problems That Came Up
+{% for p in problems %}
+- {{ p }}
+{% endfor %}
+
+## Project: {{ project }}
+
+Respond with ONLY valid JSON:
+{
+  "effective_strategies": [
+    {"strategy": "what worked well",
+     "why": "why it was effective — be specific",
+     "reusable": true}
+  ],
+  "mistakes_and_corrections": [
+    {"mistake": "what went wrong",
+     "correction": "how it was eventually fixed",
+     "prevention": "how to prevent this in future sessions"}
+  ],
+  "user_friction": [
+    {"friction": "where the user had to intervene, correct, or repeat themselves",
+     "improvement": "what the agent should do differently to avoid this"}
+  ],
+  "domain_insights": [
+    {"insight": "specific knowledge gained from this session",
+     "applies_to": "general|language:python|project|framework:fastapi|etc"}
+  ],
+  "workflow_improvements": [
+    {"current": "what was done in this session",
+     "suggested": "what would be more effective",
+     "impact": "high|medium|low"}
+  ]
+}

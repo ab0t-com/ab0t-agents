@@ -10,17 +10,10 @@ import sys
 import json
 import glob
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   load_json)
 
 action = os.environ.get("ACTION", "check")
 project_path = os.environ.get("PROJECT", os.getcwd())
@@ -30,14 +23,6 @@ CLAUDE_GLOBAL = os.path.expanduser("~/.claude/settings.json")
 CLAUDE_GLOBAL_MD = os.path.expanduser("~/.claude/CLAUDE.md")
 CODEX_GLOBAL = os.path.expanduser("~/.codex/config.json")
 CODEX_GLOBAL_MD = os.path.expanduser("~/.codex/instructions.md")
-
-
-def load_json(path):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def file_lines(path):
@@ -343,18 +328,18 @@ def cmd_paths():
     print()
 
 
-# Dispatch
-actions = {
-    "check": cmd_check,
-    "hooks": cmd_hooks,
-    "compare": cmd_compare,
-    "paths": cmd_paths,
-}
+if __name__ == "__main__":
+    actions = {
+        "check": cmd_check,
+        "hooks": cmd_hooks,
+        "compare": cmd_compare,
+        "paths": cmd_paths,
+    }
 
-handler = actions.get(action)
-if handler:
-    handler()
-else:
-    print(f"{RED}Unknown action: {action}{R}")
-    print(f"{DIM}Actions: check, hooks, compare, paths{R}")
-    raise SystemExit(1)
+    handler = actions.get(action)
+    if handler:
+        handler()
+    else:
+        print(f"{RED}Unknown action: {action}{R}")
+        print(f"{DIM}Actions: check, hooks, compare, paths{R}")
+        raise SystemExit(1)

@@ -3,7 +3,7 @@
 Session Pinning & Workspaces - group related sessions into named workspaces.
 Called by: agents workspace <action> [args]
 Env vars: ACTION (create/add/remove/show/list/delete),
-          WORKSPACE_NAME, SESSION_KEY, NOTE_TEXT
+          WS_NAME (or WORKSPACE_NAME), SESSION_KEY, NOTE_TEXT
 """
 
 import os
@@ -16,23 +16,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from adapters.claude import ClaudeAdapter
 from adapters.codex import CodexAdapter
 
-WHITE = "\033[1;37m"
-CYAN = "\033[0;36m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[1;33m"
-MAGENTA = "\033[0;35m"
-BLUE = "\033[0;34m"
-GRAY = "\033[0;90m"
-RED = "\033[0;31m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-R = "\033[0m"
+from utils import (WHITE, CYAN, GREEN, YELLOW, MAGENTA, BLUE, GRAY, RED, BOLD, DIM, R,
+                   CACHE_DIR, time_ago, get_first_message,
+                   resolve_session as _resolve_session)
 
-CACHE_DIR = os.path.expanduser("~/.ab0t/.agents")
+ALL_ADAPTERS = [ClaudeAdapter(), CodexAdapter()]
 WORKSPACES_FILE = os.path.join(CACHE_DIR, "workspaces.json")
 
 action = os.environ.get("ACTION", "list")
-workspace_name = os.environ.get("WORKSPACE_NAME", "")
+workspace_name = os.environ.get("WS_NAME", os.environ.get("WORKSPACE_NAME", ""))
 session_key = os.environ.get("SESSION_KEY", "")
 note_text = os.environ.get("NOTE_TEXT", "")
 
@@ -52,69 +44,9 @@ def save_workspaces(data):
 
 
 def resolve_session_id():
-    cache_file = os.path.join(CACHE_DIR, "sessions_cache.json")
-    if session_key.isdigit() and os.path.isfile(cache_file):
-        try:
-            with open(cache_file) as f:
-                sessions = json.load(f)
-            idx = int(session_key) - 1
-            if 0 <= idx < len(sessions):
-                s = sessions[idx]
-                return s.get("session_id", ""), s.get("agent", "claude"), s.get("path", ""), s.get("file", "")
-        except (OSError, json.JSONDecodeError, KeyError):
-            pass
-    for adapter in [ClaudeAdapter(), CodexAdapter()]:
-        if not adapter.is_available():
-            continue
-        for display, fpath, mtime, is_agent in adapter.iter_all_sessions():
-            if is_agent:
-                continue
-            basename = os.path.basename(fpath).replace(".jsonl", "")
-            if basename.startswith(session_key) or session_key in basename:
-                return basename, adapter.name, display, fpath
-    return "", "", "", ""
-
-
-def time_ago(ts):
-    s = int(time.time() - ts)
-    if s < 60:
-        return f"{s}s ago"
-    if s < 3600:
-        return f"{s // 60}m ago"
-    if s < 86400:
-        return f"{s // 3600}h ago"
-    if s < 604800:
-        return f"{s // 86400}d ago"
-    return f"{s // 604800}w ago"
-
-
-def get_first_message(fpath, agent_name):
-    try:
-        with open(fpath) as f:
-            for i, line in enumerate(f):
-                if i > 50:
-                    break
-                try:
-                    d = json.loads(line)
-                    if agent_name == "claude" and d.get("type") == "user":
-                        content = d.get("message", {}).get("content", "")
-                        if isinstance(content, str):
-                            return " ".join(content.split())[:60]
-                        if isinstance(content, list):
-                            for item in content:
-                                if isinstance(item, dict) and item.get("type") == "text":
-                                    return " ".join(item.get("text", "").split())[:60]
-                    elif agent_name == "codex" and d.get("type") == "response_item":
-                        p = d.get("payload", d.get("item", {}))
-                        if p.get("role") == "user":
-                            for c in p.get("content", []):
-                                if isinstance(c, dict) and c.get("text"):
-                                    return " ".join(c["text"].split())[:60]
-                except (json.JSONDecodeError, KeyError):
-                    pass
-    except OSError:
-        pass
-    return ""
+    """Resolve session key to (session_id, agent, project, fpath)."""
+    fpath, agent, project, sid = _resolve_session(session_key, ALL_ADAPTERS)
+    return sid, agent, project, fpath
 
 
 def cmd_create():
@@ -293,20 +225,20 @@ def cmd_delete():
     print(f"{GREEN}Deleted workspace: {WHITE}{workspace_name}{R}")
 
 
-# Dispatch
-actions = {
-    "create": cmd_create,
-    "add": cmd_add,
-    "remove": cmd_remove,
-    "show": cmd_show,
-    "list": cmd_list,
-    "delete": cmd_delete,
-}
+if __name__ == "__main__":
+    actions = {
+        "create": cmd_create,
+        "add": cmd_add,
+        "remove": cmd_remove,
+        "show": cmd_show,
+        "list": cmd_list,
+        "delete": cmd_delete,
+    }
 
-handler = actions.get(action)
-if handler:
-    handler()
-else:
-    print(f"{RED}Unknown action: {action}{R}")
-    print(f"{DIM}Actions: create, add, remove, show, list, delete{R}")
-    raise SystemExit(1)
+    handler = actions.get(action)
+    if handler:
+        handler()
+    else:
+        print(f"{RED}Unknown action: {action}{R}")
+        print(f"{DIM}Actions: create, add, remove, show, list, delete{R}")
+        raise SystemExit(1)
