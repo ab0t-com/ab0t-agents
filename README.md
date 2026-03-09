@@ -1,331 +1,200 @@
 # agents
 
-**Claude Code Session Browser, Manager, and Launcher**
+**Never lose track of where your AI agents are running.**
 
-A command-line utility for browsing, managing, and resuming [Claude Code](https://claude.ai/code) sessions across your projects.
+You're using Claude Code, Codex, Gemini — maybe all three — across dozens of projects. Sessions pile up. You forget where you left off. Resuming means hunting through directories and remembering session IDs.
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![Claude Code](https://img.shields.io/badge/tested%20with-Claude%20Code%202.0.76-green)
-![Shell](https://img.shields.io/badge/shell-bash-orange)
+`agents` fixes that. One command, and you see everything:
+
+```
+$ agents
+Coding Agent Projects
+────────────────────────────────────────────────────
+
+[ a] /home/ubuntu/tmp
+     20s ago    sessions: 8  [claude]
+[bp] /home/ubuntu/www/auth/www/tickets
+     30m ago    sessions: 1  [claude]
+[ y] /home/ubuntu/www/integration
+     31m ago    sessions: 4  [claude]
+[bq] /home/ubuntu/www/auth/www/site/tickets/tasklists_20260309
+     31m ago    sessions: 1  [claude]
+[bo] /home/ubuntu/infra/infra/code/intergration/output/tickets/open
+     1h ago     sessions: 1  [codex]
+[bj] /home/ubuntu/infra/infra/code/auth/output/tmp
+     6h ago     sessions: 3  [claude]
+[ac] /home/ubuntu/www/auth
+     2d ago     sessions: 8  [claude]
+
+Usage: agents show <letter>  or  agents show <path>
+       agents go <letter> [agent]  # resume last session
+```
+
+Every project. Every agent. Sorted by when you last touched it. Pick a letter and you're back in.
 
 ---
 
-## The Problem
+## What You Get
 
-When using Claude Code across multiple projects, conversations get scattered:
-- Sessions are stored in `~/.claude/projects/` with encoded path names
-- No easy way to see which projects have active sessions
-- Hard to remember which session had that useful conversation
-- Resuming sessions requires knowing the session ID
-
-## The Solution
-
-`agents` provides a simple interface to:
-- **List** all your Claude Code projects sorted by recent activity
-- **Show** sessions for any project with previews of conversation content
-- **Tree** view combining sessions with project file structure
-- **Resume** sessions with a simple numbered shortcut
+- **One view of all your agents** — Claude, Codex, Gemini sessions in a single list, sorted by recency
+- **Instant resume** — `agents go a` drops you into the project directory and resumes your last session, no ID required
+- **Session browser** — see what each conversation was about before you open it
+- **Usage stats** — tokens, time, models, activity across all your agents
+- **Tree view** — project structure annotated with session badges
+- **Multi-agent aware** — tracks which agent (Claude, Codex, Gemini) owns each session
 
 ---
 
-## Installation
+## Install
 
-### Quick Install (curl)
+### One-liner
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/ab0t-com/ab0t-agents/main/install.sh | bash
 ```
 
-### Quick Install (wget)
+Or with wget:
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/ab0t-com/ab0t-agents/main/install.sh | bash
 ```
 
-### Manual Install
+### From source
 
 ```bash
 git clone https://github.com/ab0t-com/ab0t-agents.git
-cd ab0t-agents
-./install.sh
+cd ab0t-agents && ./install.sh
 ```
 
 ### Uninstall
 
 ```bash
-~/.local/bin/agents  # or wherever you installed it
 ./install.sh --uninstall
 ```
 
 ---
 
-## Quick Start
+## 30-Second Tour
+
+**See where you've been working:**
 
 ```bash
-agents              # List your recent projects
-agents tree .       # Tree view of current directory with sessions
-agents show .       # Show sessions for current directory
-agents resume 1     # Resume session #1 from last show
-agents man          # Full documentation
+$ agents
 ```
+
+Lists every project with active sessions, which agent owns them, and how recently you were there.
+
+**Dive into a project:**
+
+```bash
+$ agents show a
+Sessions in /home/ubuntu/tmp
+────────────────────────────────────────────────────
+
+[ 1] [claude] f150d758
+     20s ago   2026-03-09 10:27  (222K)
+     "three tasks, one add or update that install so ..."
+[ 2] [claude] 1138a70b
+     2d ago    2026-03-06 16:51  (4.8M)
+     "use tree to look around depth 7 we are in a pro..."
+[ 3] [claude] 456fe104
+     1w ago    2026-02-27 13:04  (9.7M)
+     "why is my swap 100% so high? whats using memory..."
+```
+
+Each session shows when it happened, its size, and a preview of what you were working on.
+
+**Jump back in:**
+
+```bash
+$ agents go a          # cd + resume last session
+$ agents resume 2      # resume a specific session
+```
+
+**See the big picture:**
+
+```bash
+$ agents stats
+Coding Agent Statistics
+────────────────────────────────────────────────────
+
+  Agents: claude(97), codex(20)
+
+  Projects:   43         Sessions:  117
+  Session time: 28d 13h   Active time: 3d 13h
+  Input: 7.4B tokens     Cache hit: 97%
+
+  Models:
+  opus-4-6             ██████████████░░░░░░ 66707 (73%)
+  gpt-5.3-codex        ████░░░░░░░░░░░░░░░░ 19629 (22%)
+  sonnet-4-6           ░░░░░░░░░░░░░░░░░░░░  3383 (4%)
+```
+
+Token usage, time spent, model breakdown, top projects — across every agent you use.
 
 ---
 
 ## Commands
 
-| Command | Alias | Description |
-|---------|-------|-------------|
-| `agents list` | `ls` | List all projects with sessions |
-| `agents show [path\|num]` | `s` | Show sessions for a project |
-| `agents tree [path\|num]` | `t` | Tree view with sessions + files |
-| `agents resume <num>` | `r` | Resume a session |
-| `agents stats` | | Show usage statistics |
-| `agents help` | `-h` | Brief help |
-| `agents man` | | Detailed manual |
-| `agents --version` | `-v` | Show version |
+| Command | What it does |
+|---------|-------------|
+| `agents` | List all projects with sessions, sorted by recency |
+| `agents show <letter\|path>` | Browse sessions for a project with previews |
+| `agents go <letter> [agent]` | cd into project + resume last session |
+| `agents resume <num>` | Resume a specific session from last `show` |
+| `agents tree [path]` | Directory tree annotated with session badges |
+| `agents stats` | Usage stats: tokens, time, models, activity |
+| `agents list -a` | Show all projects (no limit) |
+| `agents help` | Quick reference |
+| `agents man` | Full documentation |
 
 ---
 
-## Usage Examples
+## Why This Exists
 
-### Finding Your Projects
+AI coding agents are becoming part of the daily workflow. But every agent stores sessions differently, in different places, with different naming conventions. When you're running Claude in one project, Codex in another, and Gemini in a third, there's no single place to see what's happening.
 
-```bash
-agents                  # List 10 most recent projects
-agents list -a          # List ALL projects
-agents list -n 20       # List 20 projects
-```
+`agents` is a multi-agent session manager. It reads the session data that your agents already create and gives you a unified view. No configuration. No syncing. Just point it at your machine and it finds everything.
 
-### Exploring a Project
+**The workflow it enables:**
 
-```bash
-agents tree .           # Current directory: sessions + files
-agents tree . -d 2      # Shallow tree (depth 2)
-agents tree . --no-files # Only show sessions
-agents show 3           # Sessions for project #3 from list
-```
-
-### Resuming Work
-
-```bash
-agents show .           # See sessions with previews
-agents resume 1         # Resume session #1
-agents r 2 "continue"   # Resume #2 with initial message
-```
-
-### Daily Workflow
-
-```bash
-# Start of day - find where you left off
-agents                  # 1. See recent projects
-agents tree 1           # 2. Check most recent
-agents resume 1         # 3. Continue working
-```
+1. Start your day — run `agents` to see where you left off
+2. Pick a project — `agents show a` to browse sessions
+3. Resume — `agents go a` to jump right back in
+4. At any point — `agents stats` to see how you're using your agents
 
 ---
 
-## Output Examples
+## Supported Agents
 
-### `agents list`
+| Agent | Status | Sessions |
+|-------|--------|----------|
+| **Claude Code** | Fully supported | `~/.claude/projects/` |
+| **Codex** | Fully supported | `~/.codex/sessions/` |
+| **Gemini** | Detection supported | `~/.gemini/` |
 
-```
-Claude Code Projects
-────────────────────────────────────────────────────
-
-[ 1] /home/user/myproject
-     5m ago     sessions: 3 last: a1b2c3d4
-[ 2] /home/user/webapp
-     2h ago     sessions: 7 last: e5f6g7h8
-[ 3] /home/user/api-server
-     1d ago     sessions: 2
-```
-
-### `agents tree .`
-
-```
-/home/user/myproject
-├── .claude-sessions/ (3 sessions)
-│   ├── [1] a1b2c3d4 5m ago   2.1M ⎇ main
-│   │   "Help me refactor the authentication module..."
-│   ├── [2] x9y8z7w6 2d ago   890K ⎇ feature/payments
-│   │   "Fix the bug in the payment processing..."
-│   └── [3] m4n5o6p7 1w ago   156K
-├── files/
-    ├── README.md
-    ├── src/
-    │   ├── index.ts
-    │   └── auth/
-    (2 directories hidden: .venv, node_modules, etc.)
-
-Quick resume: cd /home/user/myproject && claude -c
-```
-
----
-
-## Core Concepts
-
-### Sessions
-
-Each time you use Claude Code in a directory, it creates a **session** - a JSONL file containing your conversation history. Sessions are identified by UUIDs like `a1b2c3d4-e5f6-7890-abcd-ef1234567890`.
-
-### Projects
-
-A **project** is a directory where you've used Claude Code. Projects are stored in `~/.claude/projects/` with encoded path names (e.g., `/home/user/foo` becomes `-home-user-foo`).
-
-### Resuming
-
-Claude Code supports resuming sessions with:
-- `claude -c` - Continue the last session
-- `claude -r <id>` - Resume a specific session by ID
-
-`agents` makes this easier by showing session previews and providing numbered shortcuts.
-
-### Data Storage
-
-```
-~/.claude/
-├── projects/                   # Session data per project
-│   └── -home-user-myproj/      # Encoded project path
-│       ├── abc123.jsonl        # Main session files
-│       └── agent-xyz.jsonl     # Subagent sessions
-├── file-history/               # File version backups
-├── .credentials.json           # Authentication
-└── ...
-
-~/.claude.json                  # Global settings & metadata
-```
-
----
-
-## Features
-
-### Smart Filtering
-
-The tree view automatically hides common bloat directories:
-- **Python**: `.venv`, `venv`, `__pycache__`, `.pytest_cache`
-- **JavaScript**: `node_modules`, `.next`, `.nuxt`, `dist`
-- **Build**: `build`, `target`, `coverage`
-- **IDE**: `.git`, `.idea`, `.vscode`
-
-Use `-a` to show hidden directories.
-
-### Color Coding
-
-**Time indicators:**
-- 🟢 Green: Less than 1 hour ago
-- 🟡 Yellow: Less than 24 hours ago
-- ⚪ Gray: Older than 24 hours
-
-**File types in tree:**
-- 🔵 Blue: Directories
-- 🟢 Green: Python (.py)
-- 🟡 Yellow: JavaScript/TypeScript
-- 🔵 Cyan: Config files (JSON, YAML)
-- 🟣 Magenta: Shell scripts
-
-### Session Previews
-
-Sessions show the first user message as a preview, helping you identify what each conversation was about without opening it.
+Adding a new agent is straightforward — the adapter pattern means you implement one class and sessions appear in the unified view.
 
 ---
 
 ## Requirements
 
 - **Bash** 4.0+
-- **Python 3** (for JSON parsing)
-- **Claude Code** installed and used at least once
-
-Optional:
-- `tree` command (for enhanced file tree display)
-- `less` (for man page scrolling)
-
----
-
-## Tested With
-
-| Component | Version |
-|-----------|---------|
-| Claude Code | 2.0.76 |
-| Claude Model | claude-opus-4-5-20251101 |
-| Bash | 4.0+ |
-| Ubuntu | 22.04+ |
-
----
-
-## Future Direction
-
-### Planned Features
-
-- [ ] **Search**: `agents search "authentication"` - Find sessions by content
-- [ ] **Tags**: Add custom tags to sessions for organization
-- [ ] **Export**: Export session conversations to markdown
-- [ ] **Cleanup**: `agents prune` - Remove old/empty sessions
-- [ ] **Bookmarks**: Mark important sessions for quick access
-- [ ] **Integration**: Shell completions (bash, zsh, fish)
-- [ ] **TUI**: Interactive terminal UI with session browser
-
-### Potential Enhancements
-
-- Session rename/alias support
-- Cross-machine session sync awareness
-- Session size analytics and cleanup recommendations
-- Integration with git branches (show sessions per branch)
-- Fuzzy finding for projects and sessions
-
-### Contributing
-
-Contributions welcome! Areas of interest:
-- Shell completion scripts
-- Additional output formats (JSON, etc.)
-- Performance improvements for large session counts
-- Documentation improvements
-
----
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENTS_INSTALL_DIR` | `~/.local/bin` | Installation directory |
-| `AGENTS_MAN_DIR` | `~/.local/share/man/man1` | Man page directory |
-
----
-
-## Troubleshooting
-
-### "No Claude projects found"
-
-You haven't used Claude Code yet, or `~/.claude/projects/` doesn't exist. Use Claude Code in any directory first.
-
-### "command not found: agents"
-
-Add the installation directory to your PATH:
-
-```bash
-export PATH="$PATH:$HOME/.local/bin"
-```
-
-Add this line to your `~/.bashrc` or `~/.zshrc`.
-
-### Sessions not showing for a project
-
-The project path must match exactly. Use `agents list -a` to see all projects and find the correct path encoding.
+- **Python 3**
+- At least one AI coding agent installed and used
 
 ---
 
 ## License
 
-MIT License - see LICENSE file
+MIT License — see [LICENSE](LICENSE)
 
 ---
 
-## Acknowledgments
+## Technical Documentation
 
-- Built for use with [Claude Code](https://claude.ai/code) by Anthropic
-- Inspired by the need to manage conversations across multiple projects
+For architecture details, data formats, and contributor information, see [README_technical.md](README_technical.md).
 
 ---
 
-*Generated with Claude Code*
+*Built for developers who use AI agents every day and need a better way to manage them.*
