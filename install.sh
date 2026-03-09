@@ -46,7 +46,8 @@ fi
 REPO="ab0t-com/ab0t-agents"
 REPO_CLONE_URL="https://github.com/${REPO}.git"
 REPO_TAR_URL="https://github.com/${REPO}/archive/refs/heads/main.tar.gz"
-INSTALL_DIR="${AGENTS_INSTALL_DIR:-$HOME/.local/bin}"
+BIN_DIR="${AGENTS_BIN_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${AGENTS_INSTALL_DIR:-$BIN_DIR/ab0t}"
 
 # Flags
 DRY_RUN=false
@@ -271,11 +272,30 @@ install_files() {
     safe_exec rm -rf "$dest_scripts"
     safe_exec cp -r "$SOURCE_DIR/scripts" "$dest_scripts"
 
+    # Install shell integration
+    if [ -d "$SOURCE_DIR/shell" ]; then
+        local dest_shell="$INSTALL_DIR/shell"
+        log_info "Installing shell/ integration"
+        safe_exec rm -rf "$dest_shell"
+        safe_exec cp -r "$SOURCE_DIR/shell" "$dest_shell"
+    fi
+
     # Install man page if available
     if [ -f "$SOURCE_DIR/agents.1.txt" ]; then
         safe_exec cp "$SOURCE_DIR/agents.1.txt" "$dest_man"
     else
         log_warn "Man page not found, skipping"
+    fi
+
+    # Create symlink in BIN_DIR so 'agents' is on PATH
+    local symlink="$BIN_DIR/agents"
+    if [ "$BIN_DIR" != "$INSTALL_DIR" ]; then
+        # Remove old file/symlink if it exists
+        if [ -e "$symlink" ] || [ -L "$symlink" ]; then
+            safe_exec rm -f "$symlink"
+        fi
+        safe_exec ln -s "$INSTALL_DIR/agents" "$symlink"
+        log_success "Symlinked $symlink → $INSTALL_DIR/agents"
     fi
 
     return 0
@@ -288,35 +308,57 @@ cleanup_source() {
     fi
 }
 
-# Show PATH instructions
-show_path_instructions() {
-    # Check if INSTALL_DIR is in PATH
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        echo
-        log_warn "Installation directory not in PATH"
-        echo
+# Configure shell integration (PATH + source wrapper)
+configure_shell() {
+    local shell_name
+    shell_name=$(basename "${SHELL:-bash}")
+    local rc_file=""
 
-        # Detect shell
-        local shell_name
-        shell_name=$(basename "${SHELL:-bash}")
-        local rc_file=""
+    case "$shell_name" in
+        bash) rc_file="$HOME/.bashrc" ;;
+        zsh)  rc_file="$HOME/.zshrc" ;;
+        fish) rc_file="$HOME/.config/fish/config.fish" ;;
+        *)    rc_file="" ;;
+    esac
 
-        case "$shell_name" in
-            bash) rc_file="$HOME/.bashrc" ;;
-            zsh)  rc_file="$HOME/.zshrc" ;;
-            fish)
-                rc_file="$HOME/.config/fish/config.fish"
-                echo -e "  ${CYAN}set -gx PATH \$PATH $INSTALL_DIR${RESET}"
-                echo
-                echo -e "${DIM}Add to $rc_file${RESET}"
-                return
-                ;;
-            *) rc_file="your shell's rc file" ;;
-        esac
-
+    if [ -z "$rc_file" ]; then
+        log_warn "Could not detect shell rc file. Manually add to your shell config:"
         echo -e "  ${CYAN}export PATH=\"\$PATH:$INSTALL_DIR\"${RESET}"
+        echo -e "  ${CYAN}source $INSTALL_DIR/shell/agents.bash${RESET}"
+        return
+    fi
+
+    local changed=false
+
+    # Add PATH if needed
+    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+        if [ -f "$rc_file" ] && grep -qF "$INSTALL_DIR" "$rc_file" 2>/dev/null; then
+            log_debug "PATH entry already in $rc_file (not yet loaded)"
+        else
+            if [ "$shell_name" = "fish" ]; then
+                safe_exec bash -c "echo 'set -gx PATH \$PATH $INSTALL_DIR' >> \"$rc_file\""
+            else
+                safe_exec bash -c "echo 'export PATH=\"\$PATH:$INSTALL_DIR\"' >> \"$rc_file\""
+            fi
+            log_success "Added PATH to $rc_file"
+            changed=true
+        fi
+    fi
+
+    # Add shell wrapper source if needed (not for fish — bash/zsh only)
+    if [ "$shell_name" != "fish" ] && [ -f "$INSTALL_DIR/shell/agents.bash" ]; then
+        if [ -f "$rc_file" ] && grep -qF "shell/agents.bash" "$rc_file" 2>/dev/null; then
+            log_debug "Shell integration already in $rc_file"
+        else
+            safe_exec bash -c "echo 'source $INSTALL_DIR/shell/agents.bash' >> \"$rc_file\""
+            log_success "Added shell integration to $rc_file"
+            changed=true
+        fi
+    fi
+
+    if $changed; then
         echo
-        echo -e "${DIM}Add to $rc_file, then: source $rc_file${RESET}"
+        echo -e "${DIM}Run ${GREEN}source $rc_file${DIM} or open a new terminal to activate.${RESET}"
     fi
 }
 
@@ -357,6 +399,17 @@ show_quickstart() {
     echo -e "  ${GREEN}agents stats${RESET}    ${DIM}# Usage statistics${RESET}"
     echo -e "  ${GREEN}agents help${RESET}     ${DIM}# Full documentation${RESET}"
     echo
+
+    # Shell integration hint
+    if [ -f "$INSTALL_DIR/shell/agents.bash" ]; then
+        echo -e "${BOLD}Shell Integration ${DIM}(recommended):${RESET}"
+        echo -e "  Add to your ${CYAN}~/.bashrc${RESET} or ${CYAN}~/.zshrc${RESET}:"
+        echo
+        echo -e "    ${GREEN}source $INSTALL_DIR/shell/agents.bash${RESET}"
+        echo
+        echo -e "  ${DIM}Enables 'agents go' to cd into project directories.${RESET}"
+        echo
+    fi
 }
 
 # Uninstall function
@@ -384,11 +437,23 @@ uninstall() {
         log_success "Removed $dest_scripts"
     fi
 
-    # Note about backups
-    local backups
-    backups=$(find "$INSTALL_DIR" -name "agents*.backup.*" 2>/dev/null | wc -l)
-    if [ "$backups" -gt 0 ]; then
-        log_warn "Backup files remain in $INSTALL_DIR (remove manually if desired)"
+    # Remove shell integration
+    if [ -d "$INSTALL_DIR/shell" ]; then
+        safe_exec rm -rf "$INSTALL_DIR/shell"
+        log_success "Removed $INSTALL_DIR/shell"
+    fi
+
+    # Remove symlink from BIN_DIR
+    local symlink="$BIN_DIR/agents"
+    if [ -L "$symlink" ]; then
+        safe_exec rm -f "$symlink"
+        log_success "Removed symlink $symlink"
+    fi
+
+    # Remove ab0t dir if empty
+    if [ -d "$INSTALL_DIR" ]; then
+        rmdir "$INSTALL_DIR" 2>/dev/null && log_success "Removed $INSTALL_DIR" || \
+            log_warn "Files remain in $INSTALL_DIR (remove manually if desired)"
     fi
 
     log_success "Uninstall complete"
@@ -410,12 +475,17 @@ Options:
   --verbose, -v      Show detailed output
 
 Environment variables:
-  AGENTS_INSTALL_DIR   Installation directory (default: ~/.local/bin)
+  AGENTS_INSTALL_DIR   Installation directory (default: ~/.local/bin/ab0t)
+  AGENTS_BIN_DIR       Symlink directory on PATH (default: ~/.local/bin)
 
-Installs:
+Installs to ~/.local/bin/ab0t/:
   agents             Main CLI script
   agents.1.txt       Man page
   scripts/           Python modules (adapters, stats, session management)
+  shell/             Shell integration (agents.bash)
+
+Symlinks:
+  ~/.local/bin/agents → ~/.local/bin/ab0t/agents
 
 Examples:
   ./install.sh                              # Install locally
@@ -485,7 +555,7 @@ main() {
 
     if locate_source && install_files; then
         verify_installation
-        show_path_instructions
+        configure_shell
         show_quickstart
     else
         log_error "Installation failed"
