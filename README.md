@@ -6,29 +6,9 @@ You're using Claude Code, Codex, Gemini — maybe all three — across dozens of
 
 `agents` fixes that. One command, and you see everything:
 
-```
-$ agents
-Coding Agent Projects
-────────────────────────────────────────────────────
-
-[ a] /home/ubuntu/tmp
-     20s ago    sessions: 8  [claude]
-[bp] /home/ubuntu/www/auth/www/tickets
-     30m ago    sessions: 1  [claude]
-[ y] /home/ubuntu/www/integration
-     31m ago    sessions: 4  [claude]
-[bq] /home/ubuntu/www/auth/www/site/tickets/tasklists_20260309
-     31m ago    sessions: 1  [claude]
-[bo] /home/ubuntu/infra/infra/code/intergration/output/tickets/open
-     1h ago     sessions: 1  [codex]
-[bj] /home/ubuntu/infra/infra/code/auth/output/tmp
-     6h ago     sessions: 3  [claude]
-[ac] /home/ubuntu/www/auth
-     2d ago     sessions: 8  [claude]
-
-Usage: agents show <letter>  or  agents show <path>
-       agents go <letter> [agent]  # resume last session
-```
+<p align="center">
+  <img src="docs/images/agents-screenshot.png" alt="agents CLI showing projects across Claude and Codex" width="600">
+</p>
 
 Every project. Every agent. Sorted by when you last touched it. Pick a letter and you're back in.
 
@@ -71,12 +51,6 @@ cd ab0t-agents && ./install.sh
 ```bash
 ./install.sh --uninstall
 ```
-
----
-
-<p align="center">
-  <img src="docs/images/agents-screenshot.png" alt="agents CLI showing projects across Claude and Codex" width="600">
-</p>
 
 ---
 
