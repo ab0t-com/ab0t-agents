@@ -150,6 +150,29 @@ Token usage, time spent, model breakdown, top projects — across every agent yo
 
 ---
 
+## Goes Deeper Than Browsing
+
+The core commands get you oriented. But if you're using AI agents every day, you run into harder problems — finding that session from last week, understanding what your agents cost, handing off context when you switch from Claude to Codex mid-task.
+
+`agents experimental on` unlocks 20+ power commands:
+
+| Problem | Solution |
+|---------|----------|
+| "I fixed this before but can't find the session" | `agents search "connection pool"` — full-text search across all agents |
+| "What are my agents actually costing me?" | `agents cost --week` — breakdowns by model, project, and cache savings |
+| "I need to switch from Claude to Codex mid-task" | `agents bridge 1 --to codex` — generates a context handoff briefing |
+| "This session is 200 messages, what actually changed?" | `agents diff 1` — every file modified, command run, and commit made |
+| "I worked on auth across 3 sessions, need the full picture" | `agents blend 1 2 3` — synthesizes one briefing from multiple sessions |
+| "I have 117 sessions and can't find anything" | `agents star`, `agents tag`, `agents workspace` — organize your way |
+| "I keep re-explaining my preferences to new sessions" | `agents learn` — extracts patterns from your history automatically |
+| "How did I set up the database last time?" | `agents rag "database setup"` — RAG over your own session history |
+
+All experimental data is isolated to `~/.ab0t/.agents/` — nothing touches your agent session files.
+
+Full documentation: **[Power Features](docs/experimental.md)**
+
+---
+
 ## Why This Exists
 
 AI coding agents are becoming part of the daily workflow. But every agent stores sessions differently, in different places, with different naming conventions. When you're running Claude in one project, Codex in another, and Gemini in a third, there's no single place to see what's happening.
