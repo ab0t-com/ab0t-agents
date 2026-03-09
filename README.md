@@ -74,6 +74,12 @@ cd ab0t-agents && ./install.sh
 
 ---
 
+<p align="center">
+  <img src="docs/images/agents-screenshot.png" alt="agents CLI showing projects across Claude and Codex" width="600">
+</p>
+
+---
+
 ## 30-Second Tour
 
 **See where you've been working:**
