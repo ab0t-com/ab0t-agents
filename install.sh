@@ -4,12 +4,12 @@
 # Installation script
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/ab0t-com/agents/main/install.sh | bash
-#   wget -qO- https://raw.githubusercontent.com/ab0t-com/agents/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/ab0t-com/ab0t-agents/main/install.sh | bash
+#   wget -qO- https://raw.githubusercontent.com/ab0t-com/ab0t-agents/main/install.sh | bash
 #
 # Or clone and run locally:
-#   git clone https://github.com/ab0t-com/agents.git
-#   cd agents && ./install.sh
+#   git clone https://github.com/ab0t-com/ab0t-agents.git
+#   cd ab0t-agents && ./install.sh
 #
 # Safety:
 #   - Idempotent: safe to run multiple times
@@ -43,7 +43,7 @@ else
 fi
 
 # Configuration
-REPO="ab0t-com/agents"
+REPO="ab0t-com/ab0t-agents"
 REPO_CLONE_URL="https://github.com/${REPO}.git"
 REPO_TAR_URL="https://github.com/${REPO}/archive/refs/heads/main.tar.gz"
 INSTALL_DIR="${AGENTS_INSTALL_DIR:-$HOME/.local/bin}"
@@ -195,7 +195,7 @@ locate_source() {
     if command -v curl &> /dev/null; then
         log_debug "Downloading tarball with curl"
         if curl -sSL "$REPO_TAR_URL" | tar -xz -C "$temp_dir" 2>/dev/null; then
-            SOURCE_DIR="$temp_dir/agents-main"
+            SOURCE_DIR="$temp_dir/ab0t-agents-main"
             if [ -f "$SOURCE_DIR/agents" ] && [ -d "$SOURCE_DIR/scripts" ]; then
                 return 0
             fi
@@ -203,7 +203,7 @@ locate_source() {
     elif command -v wget &> /dev/null; then
         log_debug "Downloading tarball with wget"
         if wget -qO- "$REPO_TAR_URL" | tar -xz -C "$temp_dir" 2>/dev/null; then
-            SOURCE_DIR="$temp_dir/agents-main"
+            SOURCE_DIR="$temp_dir/ab0t-agents-main"
             if [ -f "$SOURCE_DIR/agents" ] && [ -d "$SOURCE_DIR/scripts" ]; then
                 return 0
             fi

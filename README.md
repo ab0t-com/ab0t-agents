@@ -33,20 +33,20 @@ When using Claude Code across multiple projects, conversations get scattered:
 ### Quick Install (curl)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/ab0t-com/agents/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/ab0t-com/ab0t-agents/main/install.sh | bash
 ```
 
 ### Quick Install (wget)
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/ab0t-com/agents/main/install.sh | bash
+wget -qO- https://raw.githubusercontent.com/ab0t-com/ab0t-agents/main/install.sh | bash
 ```
 
 ### Manual Install
 
 ```bash
-git clone https://github.com/ab0t-com/agents.git
-cd agents
+git clone https://github.com/ab0t-com/ab0t-agents.git
+cd ab0t-agents
 ./install.sh
 ```
 
